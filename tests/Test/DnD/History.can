@@ -1,7 +1,7 @@
 module Test.DnD.History exposing (main, tests)
 
 import Basics exposing (..)
-import Maybe exposing (..)
+import Maybe exposing (Maybe(..))
 import DnD.History exposing (..)
 import Test exposing (..)
 import Expect

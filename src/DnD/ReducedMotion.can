@@ -133,7 +133,7 @@ active with the `InstantPosition` strategy.
 instantDisplacement : List Style
 instantDisplacement =
     [ Css.property "transition" "none"
-    , Css.willChange "auto"
+    , Css.willChange Value.auto
     ]
 
 

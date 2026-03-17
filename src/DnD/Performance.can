@@ -53,7 +53,7 @@ Remove these styles when the drag ends using `willChangeEnd`.
 -}
 willChangeStart : List Style
 willChangeStart =
-    [ Css.willChange "transform"
+    [ Css.willChange (Value.willChangeProperty "transform")
     , Css.backfaceVisibility Value.hidden
     ]
 
@@ -70,7 +70,7 @@ elements wastes GPU memory.
 -}
 willChangeEnd : List Style
 willChangeEnd =
-    [ Css.willChange "auto"
+    [ Css.willChange Value.auto
     , Css.backfaceVisibility Value.visible
     ]
 

@@ -97,7 +97,7 @@ dragStyles state itemId =
                     [ Css.transform [ Value.translate (Value.px drag.delta.x) (Value.px drag.delta.y) ]
                     , Css.zIndex (Value.int_ 9999)
                     , Css.position Value.relative
-                    , Css.willChange "transform"
+                    , Css.willChange (Value.willChangeProperty "transform")
                     , Css.cursor Value.grabbing
                     ]
                 ]

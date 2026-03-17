@@ -331,7 +331,7 @@ liftStyles config progress =
     in
     [ Css.transform [ Value.scale currentScale currentScale ]
     , materialShadowStyle currentElevation
-    , Css.willChange "transform"
+    , Css.willChange (Value.willChangeProperty "transform")
     , Css.zIndex (Value.int_ 9999)
     ]
 

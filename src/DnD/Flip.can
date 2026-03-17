@@ -242,7 +242,7 @@ flipStyles delta progress =
     in
     [ Css.transform
         [ Value.translate (Value.px currentDx) (Value.px currentDy) ]
-    , Css.willChange "transform"
+    , Css.willChange (Value.willChangeProperty "transform")
     ]
 
 
@@ -273,7 +273,7 @@ applyFlipTransform delta durationMs =
         (Value.ms durationMs)
         (Value.cubicBezier 0.25 0.1 0.25 1.0)
         (Value.ms 0)
-    , Css.willChange "transform"
+    , Css.willChange (Value.willChangeProperty "transform")
     ]
 
 
