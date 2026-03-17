@@ -1,0 +1,304 @@
+module Test.DnD.Collision exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD.Collision exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.Collision"
+        [ rectCenterTests
+        , distanceBetweenTests
+        , rectsOverlapTests
+        , overlapAreaTests
+        , detectClosestCenterTests
+        , detectClosestCornersTests
+        , detectRectIntersectionTests
+        , detectMostOverlapTests
+        , detectEmptyTests
+        ]
+
+
+rectCenterTests : Test
+rectCenterTests =
+    describe "rectCenter"
+        [ test "calculates center of a rectangle" <|
+            \() ->
+                rectCenter { x = 10, y = 20, width = 100, height = 50 }
+                    |> Expect.equal { x = 60, y = 45 }
+        , test "calculates center at origin" <|
+            \() ->
+                rectCenter { x = 0, y = 0, width = 40, height = 20 }
+                    |> Expect.equal { x = 20, y = 10 }
+        , test "calculates center of unit rect" <|
+            \() ->
+                rectCenter { x = 0, y = 0, width = 1, height = 1 }
+                    |> Expect.equal { x = 0.5, y = 0.5 }
+        ]
+
+
+distanceBetweenTests : Test
+distanceBetweenTests =
+    describe "distanceBetween"
+        [ test "calculates 3-4-5 triangle" <|
+            \() ->
+                distanceBetween { x = 0, y = 0 } { x = 3, y = 4 }
+                    |> Expect.within (Expect.Absolute 0.001) 5.0
+        , test "same point is zero" <|
+            \() ->
+                distanceBetween { x = 5, y = 5 } { x = 5, y = 5 }
+                    |> Expect.within (Expect.Absolute 0.001) 0.0
+        , test "horizontal distance" <|
+            \() ->
+                distanceBetween { x = 0, y = 0 } { x = 10, y = 0 }
+                    |> Expect.within (Expect.Absolute 0.001) 10.0
+        , test "vertical distance" <|
+            \() ->
+                distanceBetween { x = 0, y = 0 } { x = 0, y = 7 }
+                    |> Expect.within (Expect.Absolute 0.001) 7.0
+        , test "negative coordinates" <|
+            \() ->
+                distanceBetween { x = -3, y = -4 } { x = 0, y = 0 }
+                    |> Expect.within (Expect.Absolute 0.001) 5.0
+        ]
+
+
+rectsOverlapTests : Test
+rectsOverlapTests =
+    describe "rectsOverlap"
+        [ test "overlapping rects" <|
+            \() ->
+                rectsOverlap
+                    { x = 0, y = 0, width = 10, height = 10 }
+                    { x = 5, y = 5, width = 10, height = 10 }
+                    |> Expect.equal True
+        , test "non-overlapping rects horizontally" <|
+            \() ->
+                rectsOverlap
+                    { x = 0, y = 0, width = 10, height = 10 }
+                    { x = 20, y = 0, width = 10, height = 10 }
+                    |> Expect.equal False
+        , test "non-overlapping rects vertically" <|
+            \() ->
+                rectsOverlap
+                    { x = 0, y = 0, width = 10, height = 10 }
+                    { x = 0, y = 20, width = 10, height = 10 }
+                    |> Expect.equal False
+        , test "touching edges do not overlap" <|
+            \() ->
+                rectsOverlap
+                    { x = 0, y = 0, width = 10, height = 10 }
+                    { x = 10, y = 0, width = 10, height = 10 }
+                    |> Expect.equal False
+        , test "contained rect overlaps" <|
+            \() ->
+                rectsOverlap
+                    { x = 0, y = 0, width = 100, height = 100 }
+                    { x = 25, y = 25, width = 50, height = 50 }
+                    |> Expect.equal True
+        , test "identical rects overlap" <|
+            \() ->
+                rectsOverlap
+                    { x = 5, y = 5, width = 20, height = 20 }
+                    { x = 5, y = 5, width = 20, height = 20 }
+                    |> Expect.equal True
+        ]
+
+
+overlapAreaTests : Test
+overlapAreaTests =
+    describe "overlapArea"
+        [ test "partial overlap" <|
+            \() ->
+                overlapArea
+                    { x = 0, y = 0, width = 10, height = 10 }
+                    { x = 5, y = 5, width = 10, height = 10 }
+                    |> Expect.within (Expect.Absolute 0.001) 25.0
+        , test "no overlap returns zero" <|
+            \() ->
+                overlapArea
+                    { x = 0, y = 0, width = 10, height = 10 }
+                    { x = 20, y = 20, width = 10, height = 10 }
+                    |> Expect.within (Expect.Absolute 0.001) 0.0
+        , test "full containment" <|
+            \() ->
+                overlapArea
+                    { x = 0, y = 0, width = 100, height = 100 }
+                    { x = 25, y = 25, width = 50, height = 50 }
+                    |> Expect.within (Expect.Absolute 0.001) 2500.0
+        , test "identical rects" <|
+            \() ->
+                overlapArea
+                    { x = 10, y = 10, width = 30, height = 30 }
+                    { x = 10, y = 10, width = 30, height = 30 }
+                    |> Expect.within (Expect.Absolute 0.001) 900.0
+        , test "touching edge has zero overlap" <|
+            \() ->
+                overlapArea
+                    { x = 0, y = 0, width = 10, height = 10 }
+                    { x = 10, y = 0, width = 10, height = 10 }
+                    |> Expect.within (Expect.Absolute 0.001) 0.0
+        ]
+
+
+detectClosestCenterTests : Test
+detectClosestCenterTests =
+    describe "detect ClosestCenter"
+        [ test "finds closest target" <|
+            \() ->
+                let
+                    dragRect =
+                        { x = 50, y = 50, width = 20, height = 20 }
+
+                    targets =
+                        [ { id = "far", rect = { x = 200, y = 200, width = 20, height = 20 }, accept = Nothing }
+                        , { id = "close", rect = { x = 55, y = 55, width = 20, height = 20 }, accept = Nothing }
+                        , { id = "medium", rect = { x = 100, y = 100, width = 20, height = 20 }, accept = Nothing }
+                        ]
+
+                    result =
+                        detect closestCenter dragRect targets
+                in
+                Maybe.map .id result
+                    |> Expect.equal (Just "close")
+        , test "single target returns it" <|
+            \() ->
+                let
+                    dragRect =
+                        { x = 0, y = 0, width = 10, height = 10 }
+
+                    targets =
+                        [ { id = "only", rect = { x = 100, y = 100, width = 10, height = 10 }, accept = Nothing } ]
+
+                    result =
+                        detect closestCenter dragRect targets
+                in
+                Maybe.map .id result
+                    |> Expect.equal (Just "only")
+        ]
+
+
+detectClosestCornersTests : Test
+detectClosestCornersTests =
+    describe "detect ClosestCorners"
+        [ test "finds closest target by corners" <|
+            \() ->
+                let
+                    dragRect =
+                        { x = 50, y = 50, width = 20, height = 20 }
+
+                    targets =
+                        [ { id = "far", rect = { x = 200, y = 200, width = 20, height = 20 }, accept = Nothing }
+                        , { id = "close", rect = { x = 48, y = 48, width = 20, height = 20 }, accept = Nothing }
+                        ]
+
+                    result =
+                        detect closestCorners dragRect targets
+                in
+                Maybe.map .id result
+                    |> Expect.equal (Just "close")
+        ]
+
+
+detectRectIntersectionTests : Test
+detectRectIntersectionTests =
+    describe "detect RectIntersection"
+        [ test "finds first intersecting target" <|
+            \() ->
+                let
+                    dragRect =
+                        { x = 50, y = 50, width = 20, height = 20 }
+
+                    targets =
+                        [ { id = "no-overlap", rect = { x = 200, y = 200, width = 20, height = 20 }, accept = Nothing }
+                        , { id = "overlaps", rect = { x = 55, y = 55, width = 20, height = 20 }, accept = Nothing }
+                        ]
+
+                    result =
+                        detect rectIntersection dragRect targets
+                in
+                Maybe.map .id result
+                    |> Expect.equal (Just "overlaps")
+        , test "returns nothing when no intersection" <|
+            \() ->
+                let
+                    dragRect =
+                        { x = 0, y = 0, width = 10, height = 10 }
+
+                    targets =
+                        [ { id = "far1", rect = { x = 100, y = 100, width = 10, height = 10 }, accept = Nothing }
+                        , { id = "far2", rect = { x = 200, y = 200, width = 10, height = 10 }, accept = Nothing }
+                        ]
+
+                    result =
+                        detect rectIntersection dragRect targets
+                in
+                result
+                    |> Expect.equal Nothing
+        ]
+
+
+detectMostOverlapTests : Test
+detectMostOverlapTests =
+    describe "detect MostOverlap"
+        [ test "finds target with most overlap area" <|
+            \() ->
+                let
+                    dragRect =
+                        { x = 50, y = 50, width = 30, height = 30 }
+
+                    targets =
+                        [ { id = "small-overlap", rect = { x = 70, y = 70, width = 20, height = 20 }, accept = Nothing }
+                        , { id = "big-overlap", rect = { x = 45, y = 45, width = 40, height = 40 }, accept = Nothing }
+                        ]
+
+                    result =
+                        detect mostOverlap dragRect targets
+                in
+                Maybe.map .id result
+                    |> Expect.equal (Just "big-overlap")
+        , test "returns nothing with no overlap" <|
+            \() ->
+                let
+                    dragRect =
+                        { x = 0, y = 0, width = 10, height = 10 }
+
+                    targets =
+                        [ { id = "far", rect = { x = 100, y = 100, width = 10, height = 10 }, accept = Nothing } ]
+
+                    result =
+                        detect mostOverlap dragRect targets
+                in
+                result
+                    |> Expect.equal Nothing
+        ]
+
+
+detectEmptyTests : Test
+detectEmptyTests =
+    describe "detect with empty targets"
+        [ test "closestCenter with empty returns Nothing" <|
+            \() ->
+                detect closestCenter { x = 0, y = 0, width = 10, height = 10 } []
+                    |> Expect.equal Nothing
+        , test "rectIntersection with empty returns Nothing" <|
+            \() ->
+                detect rectIntersection { x = 0, y = 0, width = 10, height = 10 } []
+                    |> Expect.equal Nothing
+        , test "mostOverlap with empty returns Nothing" <|
+            \() ->
+                detect mostOverlap { x = 0, y = 0, width = 10, height = 10 } []
+                    |> Expect.equal Nothing
+        , test "closestCorners with empty returns Nothing" <|
+            \() ->
+                detect closestCorners { x = 0, y = 0, width = 10, height = 10 } []
+                    |> Expect.equal Nothing
+        ]

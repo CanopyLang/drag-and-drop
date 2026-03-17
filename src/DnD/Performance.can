@@ -1,0 +1,138 @@
+module DnD.Performance exposing
+    ( willChangeStart
+    , willChangeEnd
+    , containHints
+    , disableInteractionDuringDrag
+    , gpuAccelerated
+    )
+
+
+{-| Performance optimization helpers for drag-and-drop animations.
+
+Provides CSS hints that help the browser's compositor handle DnD
+animations efficiently. Apply `willChangeStart` when a drag begins
+and `willChangeEnd` when it finishes to avoid unnecessary compositor
+layer promotion during idle periods.
+
+`containHints` applies CSS containment to limit the browser's relayout
+scope, and `disableInteractionDuringDrag` prevents unintended hover
+effects and click handlers on non-dragged items during an active drag.
+
+# Will-Change Management
+@docs willChangeStart, willChangeEnd
+
+# Layout Containment
+@docs containHints
+
+# Interaction Control
+@docs disableInteractionDuringDrag
+
+# GPU Acceleration
+@docs gpuAccelerated
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import DnD exposing (State, DragOperation(..))
+
+
+{-| CSS styles to apply when a drag starts, promoting the element
+to its own compositor layer.
+
+Applies `will-change: transform` to signal the browser that the
+transform property will be animated. This avoids the first-frame
+jank that occurs when the browser promotes an element mid-animation.
+
+Remove these styles when the drag ends using `willChangeEnd`.
+
+    div
+        [ Css.inlineStyle (willChangeStart ++ otherStyles) ]
+        [ content ]
+-}
+willChangeStart : List Style
+willChangeStart =
+    [ Css.willChange "transform"
+    , Css.backfaceVisibility Value.hidden
+    ]
+
+
+{-| CSS styles to apply when a drag ends, releasing the compositor layer.
+
+Resets `will-change` to `auto` so the browser can reclaim the memory
+used by the promoted layer. Keeping `will-change: transform` on idle
+elements wastes GPU memory.
+
+    div
+        [ Css.inlineStyle willChangeEnd ]
+        [ content ]
+-}
+willChangeEnd : List Style
+willChangeEnd =
+    [ Css.willChange "auto"
+    , Css.backfaceVisibility Value.visible
+    ]
+
+
+{-| CSS containment hints to limit the browser's relayout scope.
+
+Applies `contain: layout style` which tells the browser that the
+element's internal layout does not affect external elements. This
+prevents expensive relayout cascades when items are displaced during
+drag operations.
+
+Uses two separate containment declarations since the CSS `contain`
+property accepts multi-keyword values that cannot be expressed through
+single typed values.
+
+Apply to each sortable item container for best performance.
+
+    div
+        [ Css.inlineStyle (containHints ++ otherStyles) ]
+        [ content ]
+-}
+containHints : List Style
+containHints =
+    [ Css.contain Value.containLayout
+    , Css.contain Value.containStyle
+    ]
+
+
+{-| Conditionally disable pointer events on an element during a drag.
+
+When a drag is active, returns `pointer-events: none` to prevent
+hover effects, tooltips, and click handlers from interfering with
+the drag operation. Returns an empty list when no drag is active.
+
+Apply this to non-dragged items in the sortable container.
+
+    div
+        [ Css.inlineStyle (disableInteractionDuringDrag model.dnd ++ otherStyles) ]
+        [ content ]
+-}
+disableInteractionDuringDrag : State id -> List Style
+disableInteractionDuringDrag state =
+    case state.operation of
+        Dragging _ ->
+            [ Css.pointerEvents Value.none ]
+
+        NotDragging ->
+            []
+
+
+{-| CSS styles for GPU-accelerated transforms.
+
+Applies `transform: translateZ(0)` to force GPU compositing on
+the element. Use this on the drag overlay and actively dragged items
+for smoother 60fps animation.
+
+    div
+        [ Css.inlineStyle (gpuAccelerated ++ otherStyles) ]
+        [ content ]
+-}
+gpuAccelerated : List Style
+gpuAccelerated =
+    [ Css.transform [ Value.translate3d (Value.px 0) (Value.px 0) (Value.px 0) ]
+    , Css.backfaceVisibility Value.hidden
+    ]

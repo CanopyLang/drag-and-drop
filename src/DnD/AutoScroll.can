@@ -1,0 +1,101 @@
+module DnD.AutoScroll exposing
+    ( AutoScrollConfig
+    , defaults
+    , disabled
+    , scrollAmount
+    )
+
+
+{-| Auto-scroll configuration for when dragging near container edges.
+
+When a user drags an item near the edge of a scrollable container,
+auto-scroll automatically scrolls the container to reveal more content.
+
+@docs AutoScrollConfig, defaults, disabled, scrollAmount
+
+-}
+
+
+{-| Configuration for auto-scroll behavior during drag operations.
+
+  - `enabled`: Whether auto-scroll is active.
+  - `threshold`: Number of pixels from the edge to start scrolling.
+  - `speed`: Base scroll speed in pixels per frame.
+  - `acceleration`: Multiplier applied as cursor gets closer to the edge.
+    Higher values produce faster scrolling near the very edge.
+-}
+type alias AutoScrollConfig =
+    { enabled : Bool
+    , threshold : Float
+    , speed : Float
+    , acceleration : Float
+    }
+
+
+{-| Default auto-scroll settings.
+
+Starts scrolling when within 50 pixels of an edge, at 10 pixels per frame,
+with 2x acceleration near the very edge.
+
+    DnD.AutoScroll.defaults
+    -- { enabled = True, threshold = 50, speed = 10, acceleration = 2.0 }
+-}
+defaults : AutoScrollConfig
+defaults =
+    { enabled = True
+    , threshold = 50.0
+    , speed = 10.0
+    , acceleration = 2.0
+    }
+
+
+{-| Disabled auto-scroll configuration.
+
+Use this to turn off auto-scroll entirely.
+
+    config = { myConfig | autoScroll = DnD.AutoScroll.disabled }
+-}
+disabled : AutoScrollConfig
+disabled =
+    { enabled = False
+    , threshold = 0.0
+    , speed = 0.0
+    , acceleration = 0.0
+    }
+
+
+{-| Calculate the scroll amount for a given position relative to a container edge.
+
+Given the distance from a container edge and the auto-scroll config,
+returns the number of pixels to scroll this frame. Returns 0 if the
+position is outside the threshold zone or auto-scroll is disabled.
+
+The scroll amount increases as the cursor gets closer to the edge,
+scaled by the acceleration factor.
+
+    scrollAmount defaults 20.0
+    -- Returns a positive scroll amount (within threshold)
+
+    scrollAmount defaults 100.0
+    -- Returns 0.0 (outside threshold)
+-}
+scrollAmount : AutoScrollConfig -> Float -> Float
+scrollAmount config distanceFromEdge =
+    if not config.enabled then
+        0.0
+
+    else if distanceFromEdge <= 0.0 then
+        0.0
+
+    else if distanceFromEdge >= config.threshold then
+        0.0
+
+    else
+        let
+            ratio =
+                1.0 - (distanceFromEdge / config.threshold)
+
+            accelerated =
+                ratio * config.acceleration
+        in
+        config.speed * accelerated

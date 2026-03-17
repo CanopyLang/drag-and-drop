@@ -1,0 +1,174 @@
+module DnD.Operation exposing
+    ( Operation(..)
+    , OperationConfig
+    , defaultConfig
+    , fromModifierKeys
+    , operationCursor
+    , operationLabel
+    , isMove
+    , isCopy
+    , isLink
+    )
+
+
+{-| Drag operation semantics derived from modifier keys.
+
+During a drag, the user can hold modifier keys to change the intended
+operation. This mirrors native OS drag-and-drop behavior where Ctrl (or Cmd
+on macOS) signals a copy, and Alt signals a link/shortcut creation.
+
+The `OperationConfig` controls which operations are permitted. When a modifier
+key maps to a disallowed operation, the default operation is used instead.
+
+@docs Operation, OperationConfig
+@docs defaultConfig, fromModifierKeys
+@docs operationCursor, operationLabel
+@docs isMove, isCopy, isLink
+
+-}
+
+
+{-| The semantic intent of a drag operation.
+
+  - `Move` removes the item from its source and places it at the target.
+  - `Copy` duplicates the item at the target, leaving the source unchanged.
+  - `Link` creates a reference to the source item at the target location.
+-}
+type Operation
+    = Move
+    | Copy
+    | Link
+
+
+{-| Configuration controlling which operations are available during drag.
+
+  - `defaultOperation`: The operation used when no modifier keys are pressed.
+  - `allowCopy`: Whether holding Ctrl or Cmd enables the Copy operation.
+  - `allowLink`: Whether holding Alt enables the Link operation.
+-}
+type alias OperationConfig =
+    { defaultOperation : Operation
+    , allowCopy : Bool
+    , allowLink : Bool
+    }
+
+
+{-| A sensible default configuration.
+
+Move is the default operation. Both Copy (via Ctrl/Cmd) and Link (via Alt)
+are enabled.
+
+    config = DnD.Operation.defaultConfig
+    -- { defaultOperation = Move, allowCopy = True, allowLink = True }
+-}
+defaultConfig : OperationConfig
+defaultConfig =
+    { defaultOperation = Move
+    , allowCopy = True
+    , allowLink = True
+    }
+
+
+{-| Determine the drag operation from the currently pressed modifier keys.
+
+Ctrl or Meta (Cmd on macOS) maps to Copy when `allowCopy` is True.
+Alt maps to Link when `allowLink` is True. If the relevant modifier is
+pressed but the operation is disallowed, the config's default operation
+is returned. When no recognized modifier is pressed, the default is used.
+
+Alt takes priority over Ctrl/Meta when both are held, matching native
+platform behavior where Alt+drag creates a link regardless of Ctrl state.
+
+    fromModifierKeys defaultConfig { ctrlKey = True, altKey = False, metaKey = False }
+    -- Copy
+
+    fromModifierKeys defaultConfig { ctrlKey = False, altKey = True, metaKey = False }
+    -- Link
+
+    fromModifierKeys defaultConfig { ctrlKey = False, altKey = False, metaKey = False }
+    -- Move
+-}
+fromModifierKeys : OperationConfig -> { ctrlKey : Bool, altKey : Bool, metaKey : Bool } -> Operation
+fromModifierKeys config keys =
+    if keys.altKey && config.allowLink then
+        Link
+
+    else if (keys.ctrlKey || keys.metaKey) && config.allowCopy then
+        Copy
+
+    else
+        config.defaultOperation
+
+
+{-| Return the CSS cursor value appropriate for the given operation.
+
+Use this to update the cursor during drag to give visual feedback about
+which operation will occur on drop.
+
+    operationCursor Move -- "move"
+    operationCursor Copy -- "copy"
+    operationCursor Link -- "alias"
+-}
+operationCursor : Operation -> String
+operationCursor operation =
+    if isMove operation then
+        "move"
+
+    else if isCopy operation then
+        "copy"
+
+    else
+        "alias"
+
+
+{-| Return a human-readable label for the operation.
+
+Useful for accessibility announcements or UI indicators.
+
+    operationLabel Move -- "Move"
+    operationLabel Copy -- "Copy"
+    operationLabel Link -- "Link"
+-}
+operationLabel : Operation -> String
+operationLabel operation =
+    if isMove operation then
+        "Move"
+
+    else if isCopy operation then
+        "Copy"
+
+    else
+        "Link"
+
+
+{-| Check whether the operation is Move. -}
+isMove : Operation -> Bool
+isMove operation =
+    case operation of
+        Move ->
+            True
+
+        _ ->
+            False
+
+
+{-| Check whether the operation is Copy. -}
+isCopy : Operation -> Bool
+isCopy operation =
+    case operation of
+        Copy ->
+            True
+
+        _ ->
+            False
+
+
+{-| Check whether the operation is Link. -}
+isLink : Operation -> Bool
+isLink operation =
+    case operation of
+        Link ->
+            True
+
+        _ ->
+            False

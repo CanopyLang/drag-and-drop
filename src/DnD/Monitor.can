@@ -1,0 +1,229 @@
+module DnD.Monitor exposing
+    ( Monitor
+    , DragEvent(..)
+    , monitor
+    , onDragStart
+    , onDragMove
+    , onDragOver
+    , onDragEnd
+    , onDragCancel
+    , processEvent
+    )
+
+
+{-| Global drag monitors observe drag events without being tied to a specific
+element. A monitor subscribes to drag lifecycle events and produces messages
+when those events occur. This is useful for coordinating cross-component
+behavior such as showing a global overlay during any drag, logging analytics
+events, or implementing custom drop previews.
+
+Monitors are pure data: they hold optional callbacks for each event type.
+Use the builder functions to register callbacks, then pass drag events
+through `processEvent` to collect the resulting messages.
+
+@docs Monitor, DragEvent
+@docs monitor
+@docs onDragStart, onDragMove, onDragOver, onDragEnd, onDragCancel
+@docs processEvent
+
+-}
+
+
+{-| A drag delta representing movement from the start position. -}
+type alias Delta =
+    { x : Float
+    , y : Float
+    }
+
+
+{-| A bounding rectangle in absolute coordinates. -}
+type alias Rect =
+    { x : Float
+    , y : Float
+    , width : Float
+    , height : Float
+    }
+
+
+{-| An item being dragged. Contains the item's identifier, its bounding
+rectangle at drag start, and a type string used for filtering compatible
+drop targets.
+-}
+type alias DragItem id =
+    { id : id
+    , rect : Rect
+    , itemType : String
+    }
+
+
+{-| A potential drop target. Contains the target's identifier, its bounding
+rectangle, and an optional list of accepted item types. When `accept` is
+`Nothing`, the target accepts all item types.
+-}
+type alias DropTarget id =
+    { id : id
+    , rect : Rect
+    , accept : Maybe (List String)
+    }
+
+
+{-| A global drag monitor. Each field holds an optional callback for a
+specific drag lifecycle event. When a `DragEvent` is processed, the
+matching callback (if present) is invoked to produce a message.
+
+Build monitors using `monitor` and the `onDrag*` functions:
+
+    myMonitor =
+        monitor
+            |> onDragStart (\item -> ShowOverlay item.id)
+            |> onDragEnd (\_ _ -> HideOverlay)
+-}
+type alias Monitor id msg =
+    { onStart : Maybe (DragItem id -> msg)
+    , onMove : Maybe (DragItem id -> Delta -> msg)
+    , onOver : Maybe (DragItem id -> DropTarget id -> msg)
+    , onEnd : Maybe (DragItem id -> Maybe (DropTarget id) -> msg)
+    , onCancel : Maybe (DragItem id -> msg)
+    }
+
+
+{-| Events in the drag lifecycle. These represent every observable transition
+during a drag operation.
+
+  - `DragStarted` fires when the user begins dragging an item.
+  - `DragMoved` fires on each pointer movement with the accumulated delta.
+  - `DragOvered` fires when the dragged item enters a drop target.
+  - `DragEnded` fires when the drag completes, with the drop target if one
+    was active.
+  - `DragCancelled` fires when the drag is aborted (e.g. by pressing Escape).
+-}
+type DragEvent id
+    = DragStarted (DragItem id)
+    | DragMoved (DragItem id) Delta
+    | DragOvered (DragItem id) (DropTarget id)
+    | DragEnded (DragItem id) (Maybe (DropTarget id))
+    | DragCancelled (DragItem id)
+
+
+{-| Create an empty monitor with no callbacks registered.
+
+All event handlers default to `Nothing`, so the monitor produces no messages
+until callbacks are added with the `onDrag*` functions.
+
+    emptyMonitor = monitor
+-}
+monitor : Monitor id msg
+monitor =
+    { onStart = Nothing
+    , onMove = Nothing
+    , onOver = Nothing
+    , onEnd = Nothing
+    , onCancel = Nothing
+    }
+
+
+{-| Register a callback for when a drag operation begins.
+
+The callback receives the `DragItem` being dragged.
+
+    monitor
+        |> onDragStart (\item -> LogDragStarted item.id)
+-}
+onDragStart : (DragItem id -> msg) -> Monitor id msg -> Monitor id msg
+onDragStart callback mon =
+    { mon | onStart = Just callback }
+
+
+{-| Register a callback for pointer movement during a drag.
+
+The callback receives the `DragItem` and the accumulated `Delta` from the
+drag start position.
+
+    monitor
+        |> onDragMove (\item delta -> UpdatePreview item.id delta)
+-}
+onDragMove : (DragItem id -> Delta -> msg) -> Monitor id msg -> Monitor id msg
+onDragMove callback mon =
+    { mon | onMove = Just callback }
+
+
+{-| Register a callback for when a dragged item enters a drop target.
+
+The callback receives both the `DragItem` and the `DropTarget` it is over.
+
+    monitor
+        |> onDragOver (\item target -> HighlightTarget target.id)
+-}
+onDragOver : (DragItem id -> DropTarget id -> msg) -> Monitor id msg -> Monitor id msg
+onDragOver callback mon =
+    { mon | onOver = Just callback }
+
+
+{-| Register a callback for when a drag operation ends.
+
+The callback receives the `DragItem` and the `DropTarget` if the item was
+released over one, or `Nothing` if it was released outside any target.
+
+    monitor
+        |> onDragEnd (\item maybeTarget -> HandleDrop item.id maybeTarget)
+-}
+onDragEnd : (DragItem id -> Maybe (DropTarget id) -> msg) -> Monitor id msg -> Monitor id msg
+onDragEnd callback mon =
+    { mon | onEnd = Just callback }
+
+
+{-| Register a callback for when a drag operation is cancelled.
+
+The callback receives the `DragItem` that was being dragged. Cancellation
+typically occurs when the user presses Escape or the drag is programmatically
+aborted.
+
+    monitor
+        |> onDragCancel (\item -> RevertItem item.id)
+-}
+onDragCancel : (DragItem id -> msg) -> Monitor id msg -> Monitor id msg
+onDragCancel callback mon =
+    { mon | onCancel = Just callback }
+
+
+{-| Process a drag event through a monitor, producing messages for any
+matching callbacks.
+
+Returns a list containing zero or one message. The list is empty when the
+monitor has no callback registered for the given event type, and contains
+exactly one message when a matching callback is found.
+
+    msgs = processEvent myMonitor (DragStarted item)
+-}
+processEvent : Monitor id msg -> DragEvent id -> List msg
+processEvent mon event =
+    case event of
+        DragStarted item ->
+            maybeToList (Maybe.map (\cb -> cb item) mon.onStart)
+
+        DragMoved item delta ->
+            maybeToList (Maybe.map (\cb -> cb item delta) mon.onMove)
+
+        DragOvered item target ->
+            maybeToList (Maybe.map (\cb -> cb item target) mon.onOver)
+
+        DragEnded item maybeTarget ->
+            maybeToList (Maybe.map (\cb -> cb item maybeTarget) mon.onEnd)
+
+        DragCancelled item ->
+            maybeToList (Maybe.map (\cb -> cb item) mon.onCancel)
+
+
+{-| Convert a Maybe value into a list with zero or one element.
+
+Returns a singleton list when the value is `Just`, and an empty list
+when it is `Nothing`.
+-}
+maybeToList : Maybe a -> List a
+maybeToList maybVal =
+    case maybVal of
+        Just val ->
+            [ val ]
+
+        Nothing ->
+            []

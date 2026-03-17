@@ -1,0 +1,464 @@
+module DnD.FileDrop exposing
+    ( FileDropConfig
+    , FileDropState
+    , DroppedFile
+    , FileDropMsg(..)
+    , FileDropError(..)
+    , defaultConfig
+    , init
+    , update
+    , isHovering
+    , droppedFiles
+    , dropZoneAttrs
+    , dropZoneStyles
+    , validateFile
+    , validateFiles
+    , acceptedMimeTypes
+    )
+
+
+{-| OS file drop support via HTML5 drag-and-drop events.
+
+This module provides a self-contained system for accepting file drops
+from the operating system onto a drop zone in your application. It handles
+drag-enter/leave hover tracking, file validation (MIME type, size, count),
+and visual feedback.
+
+Wire it into your TEA architecture by storing a `FileDropState` in your
+model, forwarding `FileDropMsg` through `update`, and applying
+`dropZoneAttrs` and `dropZoneStyles` to your drop target element.
+
+# Configuration
+@docs FileDropConfig, defaultConfig
+
+# State
+@docs FileDropState, init, update, isHovering, droppedFiles
+
+# Types
+@docs DroppedFile, FileDropMsg, FileDropError
+
+# View Helpers
+@docs dropZoneAttrs, dropZoneStyles
+
+# Validation
+@docs validateFile, validateFiles, acceptedMimeTypes
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import Html exposing (Attribute)
+import Html.Attributes exposing (attribute)
+import Html.Events as Events
+import Json.Decode as Json
+
+
+{-| Configuration for the file drop zone.
+
+  - `accept`: List of accepted MIME types. Use patterns like `"image/*"`,
+    `"application/pdf"`, or `"text/plain"`. An empty list accepts all types.
+  - `maxFileSize`: Optional maximum file size in bytes per file.
+  - `maxFiles`: Optional maximum number of files allowed in a single drop.
+  - `multiple`: Whether to allow multiple files in a single drop.
+
+-}
+type alias FileDropConfig =
+    { accept : List String
+    , maxFileSize : Maybe Int
+    , maxFiles : Maybe Int
+    , multiple : Bool
+    }
+
+
+{-| Internal state of the file drop zone.
+
+  - `hovering`: Whether a drag is currently hovering over the drop zone.
+  - `files`: The list of files from the most recent valid drop.
+  - `errors`: Validation errors from the most recent drop attempt.
+
+-}
+type alias FileDropState =
+    { hovering : Bool
+    , files : List DroppedFile
+    , errors : List FileDropError
+    }
+
+
+{-| Metadata for a file that was dropped onto the drop zone.
+
+  - `name`: The file name including extension.
+  - `size`: The file size in bytes.
+  - `mimeType`: The MIME type reported by the browser (may be empty).
+
+-}
+type alias DroppedFile =
+    { name : String
+    , size : Int
+    , mimeType : String
+    }
+
+
+{-| Messages produced by the file drop zone's event handlers.
+
+  - `DragEnter`: A drag entered the drop zone boundary.
+  - `DragLeave`: A drag left the drop zone boundary.
+  - `DragOverMsg`: A drag is moving within the drop zone (used to allow drops).
+  - `FilesDropped`: Files were dropped onto the zone.
+
+-}
+type FileDropMsg
+    = DragEnter
+    | DragLeave
+    | DragOverMsg
+    | FilesDropped (List DroppedFile)
+
+
+{-| Validation errors that can occur when files are dropped.
+
+  - `FileTooLarge`: A file exceeds the configured `maxFileSize`.
+  - `TooManyFiles`: More files were dropped than `maxFiles` allows.
+  - `InvalidMimeType`: A file's MIME type is not in the `accept` list.
+
+-}
+type FileDropError
+    = FileTooLarge { name : String, size : Int, maxSize : Int }
+    | TooManyFiles { count : Int, maxFiles : Int }
+    | InvalidMimeType { name : String, mimeType : String }
+
+
+{-| Sensible default configuration that accepts all file types.
+
+Allows multiple files with no size or count restrictions.
+
+    defaultConfig ==
+        { accept = []
+        , maxFileSize = Nothing
+        , maxFiles = Nothing
+        , multiple = True
+        }
+
+-}
+defaultConfig : FileDropConfig
+defaultConfig =
+    { accept = []
+    , maxFileSize = Nothing
+    , maxFiles = Nothing
+    , multiple = True
+    }
+
+
+{-| Initial file drop state with no hover, no files, and no errors.
+
+    init ==
+        { hovering = False
+        , files = []
+        , errors = []
+        }
+
+-}
+init : FileDropState
+init =
+    { hovering = False
+    , files = []
+    , errors = []
+    }
+
+
+{-| Update the file drop state in response to a message.
+
+Handles hover tracking for `DragEnter`, `DragLeave`, and `DragOverMsg`.
+When `FilesDropped` is received, validates the files against the config
+and populates either `files` (on success) or `errors` (on failure).
+
+    update config DragEnter state
+    -- { state | hovering = True }
+
+-}
+update : FileDropConfig -> FileDropMsg -> FileDropState -> FileDropState
+update config msg state =
+    updateMsg config msg state
+
+
+{-| Check whether a drag is currently hovering over the drop zone.
+
+    isHovering state == True
+
+-}
+isHovering : FileDropState -> Bool
+isHovering state =
+    state.hovering
+
+
+{-| Get the list of files from the most recent successful drop.
+
+    droppedFiles state == [ { name = "photo.jpg", size = 12345, mimeType = "image/jpeg" } ]
+
+-}
+droppedFiles : FileDropState -> List DroppedFile
+droppedFiles state =
+    state.files
+
+
+{-| HTML attributes for the file drop zone element.
+
+Attaches `dragenter`, `dragleave`, `dragover` (with preventDefault to allow
+drops), and `drop` event handlers. The provided tagger wraps `FileDropMsg`
+into your application's message type.
+
+    div (dropZoneAttrs MyFileDropMsg ++ [ class "upload-area" ])
+        [ text "Drop files here" ]
+
+-}
+dropZoneAttrs : (FileDropMsg -> msg) -> List (Attribute msg)
+dropZoneAttrs tagger =
+    [ Events.on "dragenter"
+        (Json.succeed (tagger DragEnter))
+    , Events.on "dragleave"
+        (Json.succeed (tagger DragLeave))
+    , Events.preventDefaultOn "dragover"
+        (Json.succeed ( tagger DragOverMsg, True ))
+    , Events.preventDefaultOn "drop"
+        (Json.map (\files -> ( tagger (FilesDropped files), True ))
+            filesDecoder
+        )
+    ]
+
+
+{-| Visual styles for the file drop zone that change based on hover state.
+
+Applies a dashed border at all times. When a drag is hovering, the border
+is highlighted blue and the background receives a subtle blue tint.
+
+    div (dropZoneStyles state ++ dropZoneAttrs tagger)
+        [ text "Drop files here" ]
+
+-}
+dropZoneStyles : FileDropState -> List (Attribute msg)
+dropZoneStyles state =
+    if state.hovering then
+        [ Css.inlineStyle hoverStyles ]
+
+    else
+        [ Css.inlineStyle idleStyles ]
+
+
+{-| Validate a single file against the configuration.
+
+Checks MIME type acceptance and file size limits. Returns an empty list
+if the file passes all checks, or a list of errors describing each
+violation.
+
+    validateFile config { name = "big.zip", size = 999999999, mimeType = "application/zip" }
+    -- [ FileTooLarge { name = "big.zip", size = 999999999, maxSize = 10000000 } ]
+
+-}
+validateFile : FileDropConfig -> DroppedFile -> List FileDropError
+validateFile config file =
+    validateMimeType config file ++ validateSize config file
+
+
+{-| Validate a list of files against the configuration.
+
+Checks all per-file validations (MIME type, size) plus the total file
+count against `maxFiles`. Returns an empty list when all files are valid.
+
+    validateFiles config [ file1, file2, file3 ]
+    -- [ TooManyFiles { count = 3, maxFiles = 2 } ]
+
+-}
+validateFiles : FileDropConfig -> List DroppedFile -> List FileDropError
+validateFiles config files =
+    validateCount config files ++ List.concatMap (validateFile config) files
+
+
+{-| Format the `accept` list into a comma-separated string suitable for
+the HTML `accept` attribute on a file input.
+
+Returns an empty string when no MIME type restrictions are configured.
+
+    acceptedMimeTypes { defaultConfig | accept = [ "image/*", "application/pdf" ] }
+    -- "image/*,application/pdf"
+
+-}
+acceptedMimeTypes : FileDropConfig -> String
+acceptedMimeTypes config =
+    String.join "," config.accept
+
+
+
+-- INTERNAL
+
+
+{-| Process a file drop message and return the updated state. -}
+updateMsg : FileDropConfig -> FileDropMsg -> FileDropState -> FileDropState
+updateMsg config msg state =
+    case msg of
+        DragEnter ->
+            { state | hovering = True }
+
+        DragLeave ->
+            { state | hovering = False }
+
+        DragOverMsg ->
+            { state | hovering = True }
+
+        FilesDropped rawFiles ->
+            handleFilesDropped config rawFiles state
+
+
+{-| Handle the FilesDropped message by validating and storing results. -}
+handleFilesDropped : FileDropConfig -> List DroppedFile -> FileDropState -> FileDropState
+handleFilesDropped config rawFiles state =
+    let
+        filesToValidate =
+            if config.multiple then
+                rawFiles
+
+            else
+                List.take 1 rawFiles
+
+        errors =
+            validateFiles config filesToValidate
+    in
+    if List.isEmpty errors then
+        { hovering = False
+        , files = filesToValidate
+        , errors = []
+        }
+
+    else
+        { hovering = False
+        , files = []
+        , errors = errors
+        }
+
+
+{-| Validate that a file's MIME type is accepted by the configuration.
+
+Returns an empty list when the accept list is empty (all types allowed)
+or when the file's type matches one of the accepted patterns.
+-}
+validateMimeType : FileDropConfig -> DroppedFile -> List FileDropError
+validateMimeType config file =
+    if List.isEmpty config.accept then
+        []
+
+    else if matchesAnyMimeType config.accept file.mimeType then
+        []
+
+    else
+        [ InvalidMimeType { name = file.name, mimeType = file.mimeType } ]
+
+
+{-| Validate that a file does not exceed the configured maximum size.
+
+Returns an empty list when no size limit is configured or when the file
+is within the limit.
+-}
+validateSize : FileDropConfig -> DroppedFile -> List FileDropError
+validateSize config file =
+    case config.maxFileSize of
+        Nothing ->
+            []
+
+        Just maxSize ->
+            if file.size > maxSize then
+                [ FileTooLarge { name = file.name, size = file.size, maxSize = maxSize } ]
+
+            else
+                []
+
+
+{-| Validate that the number of files does not exceed the configured maximum.
+
+Returns an empty list when no file count limit is configured or when the
+count is within the limit.
+-}
+validateCount : FileDropConfig -> List DroppedFile -> List FileDropError
+validateCount config files =
+    case config.maxFiles of
+        Nothing ->
+            []
+
+        Just maxCount ->
+            let
+                count =
+                    List.length files
+            in
+            if count > maxCount then
+                [ TooManyFiles { count = count, maxFiles = maxCount } ]
+
+            else
+                []
+
+
+{-| Check whether a MIME type matches any pattern in the accept list.
+
+Supports wildcard patterns like `"image/*"` which match any MIME type
+starting with `"image/"`.
+-}
+matchesAnyMimeType : List String -> String -> Bool
+matchesAnyMimeType patterns mimeType =
+    List.any (\pattern -> matchesMimePattern pattern mimeType) patterns
+
+
+{-| Check whether a MIME type matches a single accept pattern.
+
+Handles two forms:
+  - Exact match: `"image/png"` matches `"image/png"`
+  - Wildcard subtype: `"image/*"` matches any type starting with `"image/"`
+
+-}
+matchesMimePattern : String -> String -> Bool
+matchesMimePattern pattern mimeType =
+    if String.endsWith "/*" pattern then
+        String.startsWith (String.dropRight 1 pattern) mimeType
+
+    else
+        pattern == mimeType
+
+
+{-| JSON decoder for extracting file metadata from a drop event.
+
+Reads the `dataTransfer.files` array from the DOM event and extracts
+`name`, `size`, and `type` for each file entry.
+-}
+filesDecoder : Json.Decoder (List DroppedFile)
+filesDecoder =
+    Json.at [ "dataTransfer", "files" ] (Json.list fileDecoder)
+
+
+{-| JSON decoder for a single File object's metadata. -}
+fileDecoder : Json.Decoder DroppedFile
+fileDecoder =
+    Json.map3 DroppedFile
+        (Json.field "name" Json.string)
+        (Json.field "size" Json.int)
+        (Json.field "type" Json.string)
+
+
+{-| Styles applied to the drop zone when no drag is hovering.
+
+Shows a subtle dashed border to indicate the drop target area.
+-}
+idleStyles : List Style
+idleStyles =
+    [ Css.border (Value.px 2) Value.dashed (Value.hex "cccccc")
+    , Css.borderRadius (Value.px 8)
+    , Css.property "transition" "border-color 150ms ease, background-color 150ms ease"
+    ]
+
+
+{-| Styles applied to the drop zone when a drag is hovering over it.
+
+Highlights the border in blue and adds a subtle blue background tint
+to signal that files can be dropped.
+-}
+hoverStyles : List Style
+hoverStyles =
+    [ Css.border (Value.px 2) Value.dashed (Value.hex "4a90d9")
+    , Css.borderRadius (Value.px 8)
+    , Css.backgroundColor (Value.rgba 74 144 217 0.08)
+    , Css.property "transition" "border-color 150ms ease, background-color 150ms ease"
+    ]

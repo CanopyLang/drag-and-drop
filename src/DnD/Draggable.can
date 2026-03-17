@@ -1,0 +1,118 @@
+module DnD.Draggable exposing
+    ( draggableAttrs
+    , draggableAttrsWithInstructions
+    , dragStyles
+    , transformStyle
+    )
+
+
+{-| Attributes and styles for making elements draggable.
+
+Apply `draggableAttrs` to an element to make it a drag source,
+and `dragStyles` to apply CSS transforms during an active drag.
+
+@docs draggableAttrs, draggableAttrsWithInstructions, dragStyles, transformStyle
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import DnD exposing (State, Delta, DragOperation(..), ActiveDrag)
+import Html exposing (Attribute)
+import Html.Attributes exposing (style, attribute)
+
+
+{-| Unique ID for the drag instructions element, used by aria-describedby. -}
+dragInstructionsId : String
+dragInstructionsId =
+    "dnd-instructions"
+
+
+{-| Generate the HTML attributes to make an element draggable.
+
+Returns a list of attributes that include:
+  - `tabindex="0"` for keyboard focus
+  - `role="button"` for accessibility
+  - `aria-roledescription="draggable"` for screen readers
+  - `aria-describedby` pointing to drag instructions
+  - `touch-action="none"` to prevent scroll on touch
+  - `cursor: grab` styling
+
+    div (DnD.Draggable.draggableAttrs ++ [ class "my-item" ])
+        [ text "Drag me" ]
+-}
+draggableAttrs : List (Attribute msg)
+draggableAttrs =
+    [ attribute "tabindex" "0"
+    , attribute "role" "button"
+    , attribute "aria-roledescription" "draggable"
+    , attribute "aria-describedby" dragInstructionsId
+    , Css.inlineStyle
+        [ Css.touchAction Value.none
+        , Css.cursor Value.grab
+        , Css.userSelect Value.none
+        ]
+    ]
+
+
+{-| Generate draggable attributes with a custom instructions element id.
+
+Use this when you have multiple drag contexts with different instructions.
+
+    div (DnD.Draggable.draggableAttrsWithInstructions "my-instructions" ++ attrs)
+        [ text "Drag me" ]
+-}
+draggableAttrsWithInstructions : String -> List (Attribute msg)
+draggableAttrsWithInstructions instructionsId =
+    [ attribute "tabindex" "0"
+    , attribute "role" "button"
+    , attribute "aria-roledescription" "draggable"
+    , attribute "aria-describedby" instructionsId
+    , Css.inlineStyle
+        [ Css.touchAction Value.none
+        , Css.cursor Value.grab
+        , Css.userSelect Value.none
+        ]
+    ]
+
+
+{-| Generate CSS transform styles for the currently dragged item.
+
+If the given id matches the active drag item, returns a list containing
+a CSS `transform: translate` attribute. Otherwise returns an empty list.
+
+    div (DnD.Draggable.dragStyles state "item-1" ++ otherAttrs)
+        [ text "Item 1" ]
+-}
+dragStyles : State id -> id -> List (Attribute msg)
+dragStyles state itemId =
+    case state.operation of
+        NotDragging ->
+            []
+
+        Dragging drag ->
+            if drag.item.id == itemId then
+                [ Css.inlineStyle
+                    [ Css.transform [ Value.translate (Value.px drag.delta.x) (Value.px drag.delta.y) ]
+                    , Css.zIndex (Value.int_ 9999)
+                    , Css.position Value.relative
+                    , Css.willChange "transform"
+                    , Css.cursor Value.grabbing
+                    ]
+                ]
+
+            else
+                []
+
+
+{-| Convert a delta into a CSS transform: translate style attribute.
+
+    transformStyle { x = 10.0, y = -5.0 }
+    -- style "transform" "translate(10px, -5px)"
+-}
+transformStyle : Delta -> Attribute msg
+transformStyle delta =
+    Css.inlineStyle
+        [ Css.transform [ Value.translate (Value.px delta.x) (Value.px delta.y) ]
+        ]

@@ -1,0 +1,371 @@
+module Test.DnD.MultiSelect exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD.MultiSelect exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.MultiSelect"
+        [ initTests
+        , selectTests
+        , toggleTests
+        , rangeSelectTests
+        , selectAllTests
+        , clearSelectionTests
+        , isSelectedTests
+        , selectedCountTests
+        , hasSelectionTests
+        , lassoLifecycleTests
+        , reorderSelectedTests
+        , moveSelectedBetweenTests
+        ]
+
+
+allItems : List String
+allItems =
+    [ "a", "b", "c", "d", "e" ]
+
+
+initTests : Test
+initTests =
+    describe "init"
+        [ test "has empty selection" <|
+            \() ->
+                selectedItems init
+                    |> Expect.equal []
+        , test "has no anchor" <|
+            \() ->
+                init.anchor
+                    |> Expect.equal Nothing
+        , test "has no lasso" <|
+            \() ->
+                activeLasso init
+                    |> Expect.equal Nothing
+        ]
+
+
+selectTests : Test
+selectTests =
+    describe "select"
+        [ test "selects a single item" <|
+            \() ->
+                select "b" init
+                    |> selectedItems
+                    |> Expect.equal [ "b" ]
+        , test "clears previous selection" <|
+            \() ->
+                init
+                    |> select "a"
+                    |> select "b"
+                    |> selectedItems
+                    |> Expect.equal [ "b" ]
+        , test "sets anchor to selected item" <|
+            \() ->
+                (select "c" init).anchor
+                    |> Expect.equal (Just "c")
+        ]
+
+
+toggleTests : Test
+toggleTests =
+    describe "toggle"
+        [ test "adds item when not selected" <|
+            \() ->
+                init
+                    |> select "a"
+                    |> toggle "b"
+                    |> selectedItems
+                    |> Expect.equal [ "a", "b" ]
+        , test "removes item when already selected" <|
+            \() ->
+                init
+                    |> select "a"
+                    |> toggle "b"
+                    |> toggle "b"
+                    |> selectedItems
+                    |> Expect.equal [ "a" ]
+        , test "updates anchor to toggled item" <|
+            \() ->
+                (toggle "c" init).anchor
+                    |> Expect.equal (Just "c")
+        , test "toggle on then off restores single selection" <|
+            \() ->
+                init
+                    |> select "a"
+                    |> toggle "b"
+                    |> toggle "c"
+                    |> toggle "b"
+                    |> selectedItems
+                    |> Expect.equal [ "a", "c" ]
+        ]
+
+
+rangeSelectTests : Test
+rangeSelectTests =
+    describe "rangeSelect"
+        [ test "selects range from anchor to target" <|
+            \() ->
+                init
+                    |> select "b"
+                    |> rangeSelect "d" allItems
+                    |> selectedItems
+                    |> Expect.equal [ "b", "c", "d" ]
+        , test "selects range backward" <|
+            \() ->
+                init
+                    |> select "d"
+                    |> rangeSelect "b" allItems
+                    |> selectedItems
+                    |> Expect.equal [ "b", "c", "d" ]
+        , test "without anchor selects only target" <|
+            \() ->
+                init
+                    |> rangeSelect "c" allItems
+                    |> selectedItems
+                    |> Expect.equal [ "c" ]
+        , test "range to same item selects just that item" <|
+            \() ->
+                init
+                    |> select "c"
+                    |> rangeSelect "c" allItems
+                    |> selectedItems
+                    |> Expect.equal [ "c" ]
+        ]
+
+
+selectAllTests : Test
+selectAllTests =
+    describe "selectAll"
+        [ test "selects all items" <|
+            \() ->
+                init
+                    |> selectAll allItems
+                    |> selectedItems
+                    |> Expect.equal allItems
+        , test "replaces previous selection" <|
+            \() ->
+                init
+                    |> select "a"
+                    |> selectAll [ "x", "y" ]
+                    |> selectedItems
+                    |> Expect.equal [ "x", "y" ]
+        ]
+
+
+clearSelectionTests : Test
+clearSelectionTests =
+    describe "clearSelection"
+        [ test "clears all selections" <|
+            \() ->
+                init
+                    |> select "a"
+                    |> toggle "b"
+                    |> clearSelection
+                    |> selectedItems
+                    |> Expect.equal []
+        , test "clears anchor" <|
+            \() ->
+                init
+                    |> select "a"
+                    |> clearSelection
+                    |> (\s -> s.anchor)
+                    |> Expect.equal Nothing
+        , test "clears lasso" <|
+            \() ->
+                init
+                    |> lasso 10 20
+                    |> clearSelection
+                    |> activeLasso
+                    |> Expect.equal Nothing
+        ]
+
+
+isSelectedTests : Test
+isSelectedTests =
+    describe "isSelected"
+        [ test "returns True for selected item" <|
+            \() ->
+                init
+                    |> select "a"
+                    |> isSelected "a"
+                    |> Expect.equal True
+        , test "returns False for unselected item" <|
+            \() ->
+                init
+                    |> select "a"
+                    |> isSelected "b"
+                    |> Expect.equal False
+        , test "returns False on empty selection" <|
+            \() ->
+                isSelected "a" init
+                    |> Expect.equal False
+        ]
+
+
+selectedCountTests : Test
+selectedCountTests =
+    describe "selectedCount"
+        [ test "returns 0 for empty selection" <|
+            \() ->
+                selectedCount init
+                    |> Expect.equal 0
+        , test "returns correct count after multiple toggles" <|
+            \() ->
+                init
+                    |> select "a"
+                    |> toggle "b"
+                    |> toggle "c"
+                    |> selectedCount
+                    |> Expect.equal 3
+        ]
+
+
+hasSelectionTests : Test
+hasSelectionTests =
+    describe "hasSelection"
+        [ test "returns False on empty" <|
+            \() ->
+                hasSelection init
+                    |> Expect.equal False
+        , test "returns True after select" <|
+            \() ->
+                init
+                    |> select "a"
+                    |> hasSelection
+                    |> Expect.equal True
+        ]
+
+
+lassoLifecycleTests : Test
+lassoLifecycleTests =
+    describe "lasso / updateLasso / endLasso"
+        [ test "lasso starts at given coordinates" <|
+            \() ->
+                let
+                    result =
+                        lasso 100 200 init
+                            |> activeLasso
+                in
+                Maybe.map .startX result
+                    |> Expect.equal (Just 100)
+        , test "lasso start and current are same initially" <|
+            \() ->
+                let
+                    result =
+                        lasso 100 200 init
+                            |> activeLasso
+                in
+                Maybe.map (\r -> r.startX == r.currentX && r.startY == r.currentY) result
+                    |> Expect.equal (Just True)
+        , test "updateLasso updates current position" <|
+            \() ->
+                let
+                    result =
+                        init
+                            |> lasso 100 200
+                            |> updateLasso 150 250
+                            |> activeLasso
+                in
+                Maybe.map .currentX result
+                    |> Expect.equal (Just 150)
+        , test "updateLasso preserves start position" <|
+            \() ->
+                let
+                    result =
+                        init
+                            |> lasso 100 200
+                            |> updateLasso 150 250
+                            |> activeLasso
+                in
+                Maybe.map .startX result
+                    |> Expect.equal (Just 100)
+        , test "endLasso clears lasso rectangle" <|
+            \() ->
+                init
+                    |> lasso 100 200
+                    |> updateLasso 150 250
+                    |> endLasso
+                    |> activeLasso
+                    |> Expect.equal Nothing
+        , test "updateLasso without active lasso is no-op" <|
+            \() ->
+                init
+                    |> updateLasso 150 250
+                    |> activeLasso
+                    |> Expect.equal Nothing
+        ]
+
+
+reorderSelectedTests : Test
+reorderSelectedTests =
+    describe "reorderSelected"
+        [ test "moves selected items to drop target position" <|
+            \() ->
+                let
+                    selection =
+                        init
+                            |> select "b"
+                            |> toggle "d"
+                in
+                reorderSelected selection "e" [ "a", "b", "c", "d", "e", "f" ]
+                    |> Expect.equal [ "a", "c", "e", "b", "d", "f" ]
+        , test "preserves relative order of selected items" <|
+            \() ->
+                let
+                    selection =
+                        init
+                            |> select "d"
+                            |> toggle "b"
+                in
+                reorderSelected selection "a" [ "a", "b", "c", "d", "e" ]
+                    |> Expect.equal [ "a", "b", "d", "c", "e" ]
+        ]
+
+
+moveSelectedBetweenTests : Test
+moveSelectedBetweenTests =
+    describe "moveSelectedBetween"
+        [ test "moves selected items to another list" <|
+            \() ->
+                let
+                    selection =
+                        init
+                            |> select "b"
+                            |> toggle "c"
+
+                    result =
+                        moveSelectedBetween selection
+                            { from = [ "a", "b", "c", "d" ]
+                            , to = [ "x", "y", "z" ]
+                            , over = "y"
+                            }
+                in
+                result.from
+                    |> Expect.equal [ "a", "d" ]
+        , test "inserts at correct position in target list" <|
+            \() ->
+                let
+                    selection =
+                        init
+                            |> select "b"
+                            |> toggle "c"
+
+                    result =
+                        moveSelectedBetween selection
+                            { from = [ "a", "b", "c", "d" ]
+                            , to = [ "x", "y", "z" ]
+                            , over = "y"
+                            }
+                in
+                result.to
+                    |> Expect.equal [ "x", "b", "c", "y", "z" ]
+        ]

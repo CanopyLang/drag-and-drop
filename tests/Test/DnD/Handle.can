@@ -1,0 +1,103 @@
+module Test.DnD.Handle exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import List
+import DnD
+import DnD.Handle exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.Handle"
+        [ handleAttrsTests
+        , containerTests
+        ]
+
+
+dummyRect : DnD.Rect
+dummyRect =
+    { x = 0, y = 0, width = 50, height = 50 }
+
+
+handleAttrsTests : Test
+handleAttrsTests =
+    describe "handleAttrs"
+        [ test "returns non-empty attribute list" <|
+            \() ->
+                Expect.true "handleAttrs should return attributes"
+                    (not (List.isEmpty handleAttrs))
+        , test "returns multiple attributes" <|
+            \() ->
+                Expect.true "handleAttrs should have several attributes"
+                    (List.length handleAttrs > 1)
+        ]
+
+
+containerTests : Test
+containerTests =
+    describe "container"
+        [ test "returns empty list when not dragging" <|
+            \() ->
+                container DnD.init "item1"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "returns styles when dragging the matching item" <|
+            \() ->
+                let
+                    state =
+                        DnD.update [] dummyRect
+                            (DnD.StartDrag { id = "item1", rect = dummyRect, itemType = "" } { x = 10, y = 10 })
+                            DnD.init
+                in
+                container state "item1"
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns empty list when dragging a different item" <|
+            \() ->
+                let
+                    state =
+                        DnD.update [] dummyRect
+                            (DnD.StartDrag { id = "item1", rect = dummyRect, itemType = "" } { x = 10, y = 10 })
+                            DnD.init
+                in
+                container state "item2"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "returns styles for handle of active drag" <|
+            \() ->
+                let
+                    state =
+                        DnD.update [] dummyRect
+                            (DnD.StartDrag { id = "card-3", rect = dummyRect, itemType = "" } { x = 5, y = 5 })
+                            DnD.init
+                in
+                container state "card-3"
+                    |> List.length
+                    |> Expect.equal 1
+        , test "handle function returns non-empty list of attributes" <|
+            \() ->
+                Expect.true "handle wraps handleAttrs"
+                    (not (List.isEmpty handleAttrs))
+        , test "container after EndDrag returns empty" <|
+            \() ->
+                let
+                    state =
+                        DnD.update [] dummyRect
+                            (DnD.StartDrag { id = "item1", rect = dummyRect, itemType = "" } { x = 10, y = 10 })
+                            DnD.init
+
+                    ended =
+                        DnD.update [] dummyRect DnD.EndDrag state
+                in
+                container ended "item1"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        ]

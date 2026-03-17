@@ -1,0 +1,133 @@
+module Test.DnD.Alternatives exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD.Alternatives exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+sampleList : List String
+sampleList =
+    [ "a", "b", "c", "d", "e" ]
+
+
+tests : Test
+tests =
+    describe "DnD.Alternatives"
+        [ moveUpTests
+        , moveDownTests
+        , moveToTopTests
+        , moveToBottomTests
+        , moveToPositionTests
+        , boundaryTests
+        ]
+
+
+moveUpTests : Test
+moveUpTests =
+    describe "MoveUp"
+        [ test "swaps item with predecessor" <|
+            \() ->
+                applySortAction (MoveUp "b") sampleList
+                    |> Expect.equal [ "b", "a", "c", "d", "e" ]
+        , test "moves middle item up" <|
+            \() ->
+                applySortAction (MoveUp "c") sampleList
+                    |> Expect.equal [ "a", "c", "b", "d", "e" ]
+        ]
+
+
+moveDownTests : Test
+moveDownTests =
+    describe "MoveDown"
+        [ test "swaps item with successor" <|
+            \() ->
+                applySortAction (MoveDown "b") sampleList
+                    |> Expect.equal [ "a", "c", "b", "d", "e" ]
+        , test "moves second-to-last item down" <|
+            \() ->
+                applySortAction (MoveDown "d") sampleList
+                    |> Expect.equal [ "a", "b", "c", "e", "d" ]
+        ]
+
+
+moveToTopTests : Test
+moveToTopTests =
+    describe "MoveToTop"
+        [ test "moves item to front" <|
+            \() ->
+                applySortAction (MoveToTop "c") sampleList
+                    |> Expect.equal [ "c", "a", "b", "d", "e" ]
+        , test "moves last item to front" <|
+            \() ->
+                applySortAction (MoveToTop "e") sampleList
+                    |> Expect.equal [ "e", "a", "b", "c", "d" ]
+        ]
+
+
+moveToBottomTests : Test
+moveToBottomTests =
+    describe "MoveToBottom"
+        [ test "moves item to end" <|
+            \() ->
+                applySortAction (MoveToBottom "a") sampleList
+                    |> Expect.equal [ "b", "c", "d", "e", "a" ]
+        , test "moves middle item to end" <|
+            \() ->
+                applySortAction (MoveToBottom "c") sampleList
+                    |> Expect.equal [ "a", "b", "d", "e", "c" ]
+        ]
+
+
+moveToPositionTests : Test
+moveToPositionTests =
+    describe "MoveToPosition"
+        [ test "moves item to specific index" <|
+            \() ->
+                applySortAction (MoveToPosition "a" 2) sampleList
+                    |> Expect.equal [ "b", "c", "a", "d", "e" ]
+        , test "moves to index 0" <|
+            \() ->
+                applySortAction (MoveToPosition "c" 0) sampleList
+                    |> Expect.equal [ "c", "a", "b", "d", "e" ]
+        , test "clamps to end when index exceeds length" <|
+            \() ->
+                applySortAction (MoveToPosition "a" 100) sampleList
+                    |> Expect.equal [ "b", "c", "d", "e", "a" ]
+        ]
+
+
+boundaryTests : Test
+boundaryTests =
+    describe "boundary cases"
+        [ test "MoveUp on first item is no-op" <|
+            \() ->
+                applySortAction (MoveUp "a") sampleList
+                    |> Expect.equal sampleList
+        , test "MoveDown on last item is no-op" <|
+            \() ->
+                applySortAction (MoveDown "e") sampleList
+                    |> Expect.equal sampleList
+        , test "MoveToTop on first item is no-op" <|
+            \() ->
+                applySortAction (MoveToTop "a") sampleList
+                    |> Expect.equal sampleList
+        , test "MoveToBottom on last item is no-op" <|
+            \() ->
+                applySortAction (MoveToBottom "e") sampleList
+                    |> Expect.equal sampleList
+        , test "action on non-existent item is no-op" <|
+            \() ->
+                applySortAction (MoveUp "z") sampleList
+                    |> Expect.equal sampleList
+        , test "empty list is no-op" <|
+            \() ->
+                applySortAction (MoveUp "a") []
+                    |> Expect.equal []
+        ]

@@ -1,0 +1,161 @@
+module Test.DnD.Performance exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD exposing (..)
+import DnD.Performance exposing (..)
+import Css exposing (Style(..))
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+dummyRect : Rect
+dummyRect =
+    { x = 100, y = 200, width = 50, height = 50 }
+
+
+dummyItem : DragItem String
+dummyItem =
+    { id = "item1", rect = dummyRect, itemType = "" }
+
+
+dummyPoint : Point
+dummyPoint =
+    { x = 125, y = 225 }
+
+
+draggingState : State String
+draggingState =
+    update [] dummyRect (StartDrag dummyItem dummyPoint) init
+
+
+tests : Test
+tests =
+    describe "DnD.Performance"
+        [ willChangeTests
+        , containHintsTests
+        , disableInteractionTests
+        , gpuAcceleratedTests
+        ]
+
+
+willChangeTests : Test
+willChangeTests =
+    describe "will-change management"
+        [ test "willChangeStart returns non-empty styles" <|
+            \() ->
+                willChangeStart
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "willChangeEnd returns non-empty styles" <|
+            \() ->
+                willChangeEnd
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "willChangeStart has 2 styles" <|
+            \() ->
+                willChangeStart
+                    |> List.length
+                    |> Expect.equal 2
+        , test "willChangeEnd has 2 styles" <|
+            \() ->
+                willChangeEnd
+                    |> List.length
+                    |> Expect.equal 2
+        , test "willChangeStart and willChangeEnd differ" <|
+            \() ->
+                Expect.notEqual willChangeStart willChangeEnd
+        , test "willChangeStart contains will-change:transform" <|
+            \() ->
+                let
+                    hasWillChange =
+                        List.any (\s -> s == Property "will-change" "transform") willChangeStart
+                in
+                Expect.equal True hasWillChange
+        , test "willChangeEnd contains will-change:auto" <|
+            \() ->
+                let
+                    hasWillChangeAuto =
+                        List.any (\s -> s == Property "will-change" "auto") willChangeEnd
+                in
+                Expect.equal True hasWillChangeAuto
+        ]
+
+
+containHintsTests : Test
+containHintsTests =
+    describe "containHints"
+        [ test "returns non-empty styles" <|
+            \() ->
+                containHints
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 2 styles (layout + style containment)" <|
+            \() ->
+                containHints
+                    |> List.length
+                    |> Expect.equal 2
+        ]
+
+
+disableInteractionTests : Test
+disableInteractionTests =
+    describe "disableInteractionDuringDrag"
+        [ test "returns empty list when not dragging" <|
+            \() ->
+                disableInteractionDuringDrag init
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "returns non-empty list when dragging" <|
+            \() ->
+                disableInteractionDuringDrag draggingState
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 1 style when dragging" <|
+            \() ->
+                disableInteractionDuringDrag draggingState
+                    |> List.length
+                    |> Expect.equal 1
+        , test "returns 0 styles for init state" <|
+            \() ->
+                disableInteractionDuringDrag init
+                    |> List.length
+                    |> Expect.equal 0
+        , test "cancelled drag returns empty list" <|
+            \() ->
+                let
+                    state =
+                        update [] dummyRect CancelDrag draggingState
+                in
+                disableInteractionDuringDrag state
+                    |> List.isEmpty
+                    |> Expect.equal True
+        ]
+
+
+gpuAcceleratedTests : Test
+gpuAcceleratedTests =
+    describe "gpuAccelerated"
+        [ test "returns non-empty styles" <|
+            \() ->
+                gpuAccelerated
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 2 styles" <|
+            \() ->
+                gpuAccelerated
+                    |> List.length
+                    |> Expect.equal 2
+        , test "contains backface-visibility:hidden" <|
+            \() ->
+                let
+                    hasBackface =
+                        List.any (\s -> s == Property "backface-visibility" "hidden") gpuAccelerated
+                in
+                Expect.equal True hasBackface
+        ]

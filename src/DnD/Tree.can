@@ -1,0 +1,758 @@
+module DnD.Tree exposing
+    ( TreeNode(..)
+    , treeNode
+    , nodeId
+    , nodeChildrenList
+    , nodeIsExpanded
+    , TreeConfig
+    , FlatNode
+    , DropPosition(..)
+    , TreeNodeState
+    , TreeMove
+    , flatten
+    , applyMove
+    , isValidMove
+    , moveFromDrop
+    , nodeState
+    , defaultConfig
+    , expandNode
+    , collapseNode
+    , toggleNode
+    , findNode
+    , nodeDepth
+    , nodeChildren
+    , ancestors
+    , descendants
+    , isAncestorOf
+    )
+
+
+{-| Tree drag-and-drop with depth-dependent targeting.
+
+Provides pure functions for reordering nodes within a tree structure,
+including cycle detection, depth-aware flattening, and move validation.
+This module is designed for file browsers, nested menus, org charts, and
+any UI where items can be dropped Before, After, or Inside other nodes.
+
+# Types
+@docs TreeNode, TreeConfig, FlatNode, DropPosition, TreeNodeState, TreeMove
+
+# Configuration
+@docs defaultConfig
+
+# Flattening
+@docs flatten
+
+# Move Operations
+@docs applyMove, isValidMove, moveFromDrop
+
+# Visual State
+@docs nodeState
+
+# Tree Manipulation
+@docs expandNode, collapseNode, toggleNode
+
+# Queries
+@docs findNode, nodeDepth, nodeChildren, ancestors, descendants, isAncestorOf
+
+-}
+
+
+{-| A node in a recursive tree structure.
+
+Each node has an identifier, a list of child nodes, and a flag
+indicating whether its children should be visible in the flattened
+representation. Wrapped in a custom type to allow recursive definition.
+-}
+type TreeNode id
+    = TreeNode
+        { id : id
+        , children : List (TreeNode id)
+        , isExpanded : Bool
+        }
+
+
+{-| Construct a tree node from its id, children, and expansion state.
+
+    treeNode "folder" [ treeNode "file" [] False ] True
+-}
+treeNode : id -> List (TreeNode id) -> Bool -> TreeNode id
+treeNode id children isExpanded =
+    TreeNode { id = id, children = children, isExpanded = isExpanded }
+
+
+{-| Get the identifier of a tree node. -}
+nodeId : TreeNode id -> id
+nodeId (TreeNode n) =
+    n.id
+
+
+{-| Get the children of a tree node. -}
+nodeChildrenList : TreeNode id -> List (TreeNode id)
+nodeChildrenList (TreeNode n) =
+    n.children
+
+
+{-| Check whether a tree node is expanded. -}
+nodeIsExpanded : TreeNode id -> Bool
+nodeIsExpanded (TreeNode n) =
+    n.isExpanded
+
+
+{-| Configuration for tree drag-and-drop behavior.
+
+  - `maxDepth`: Maximum nesting depth allowed. Moves that would exceed
+    this depth are rejected.
+  - `autoExpandDelay`: Milliseconds to wait before auto-expanding a
+    collapsed node when a dragged item hovers over it.
+  - `indentPx`: Pixels of horizontal indentation per depth level,
+    used to calculate visual offsets in the view.
+-}
+type alias TreeConfig =
+    { maxDepth : Int
+    , autoExpandDelay : Int
+    , indentPx : Float
+    }
+
+
+{-| A flattened representation of a tree node, produced by `flatten`.
+
+Contains the information needed to render a single row in a tree view:
+depth for indentation, parent reference for move logic, and sibling
+position flags for drawing tree guide lines.
+-}
+type alias FlatNode id =
+    { id : id
+    , depth : Int
+    , parentId : Maybe id
+    , hasChildren : Bool
+    , isExpanded : Bool
+    , isLastChild : Bool
+    }
+
+
+{-| Where an item should be dropped relative to a target node.
+
+  - `Before`: Insert as a sibling immediately before the target.
+  - `After`: Insert as a sibling immediately after the target.
+  - `Inside`: Insert as the last child of the target.
+-}
+type DropPosition
+    = Before
+    | After
+    | Inside
+
+
+{-| Visual state for rendering a tree node during a drag operation.
+
+Computed by `nodeState` from the current drag context and the
+flattened node data.
+-}
+type alias TreeNodeState =
+    { isDragging : Bool
+    , isOver : Bool
+    , dropPosition : Maybe DropPosition
+    , depth : Int
+    , isAncestorOfDragged : Bool
+    }
+
+
+{-| Describes a move operation within the tree.
+
+  - `nodeId`: The id of the node being moved.
+  - `fromParent`: The parent it was removed from (Nothing if root-level).
+  - `toParent`: The parent it is being moved to (Nothing if root-level).
+  - `toPosition`: Whether the node is placed Before, After, or Inside the target.
+  - `toIndex`: The index among siblings at the destination.
+-}
+type alias TreeMove id =
+    { nodeId : id
+    , fromParent : Maybe id
+    , toParent : Maybe id
+    , toPosition : DropPosition
+    , toIndex : Int
+    }
+
+
+{-| Default tree configuration.
+
+    defaultConfig ==
+        { maxDepth = 10
+        , autoExpandDelay = 500
+        , indentPx = 24.0
+        }
+-}
+defaultConfig : TreeConfig
+defaultConfig =
+    { maxDepth = 10
+    , autoExpandDelay = 500
+    , indentPx = 24.0
+    }
+
+
+
+-- FLATTEN
+
+
+{-| Flatten a tree into a list using depth-first pre-order traversal.
+
+Collapsed nodes (where `isExpanded` is False) have their children
+excluded from the output. Each resulting `FlatNode` carries its depth,
+parent id, and sibling position information.
+
+    flatten { id = "root", children = [ child1, child2 ], isExpanded = True }
+    -- [ FlatNode "root" 0 Nothing True True True, FlatNode "child1" 1 (Just "root") ... , ... ]
+-}
+flatten : TreeNode id -> List (FlatNode id)
+flatten root =
+    flattenHelp 0 Nothing True root []
+        |> List.reverse
+
+
+flattenHelp : Int -> Maybe id -> Bool -> TreeNode id -> List (FlatNode id) -> List (FlatNode id)
+flattenHelp depth parentId isLast (TreeNode node) acc =
+    let
+        flat =
+            { id = node.id
+            , depth = depth
+            , parentId = parentId
+            , hasChildren = not (List.isEmpty node.children)
+            , isExpanded = node.isExpanded
+            , isLastChild = isLast
+            }
+
+        withSelf =
+            flat :: acc
+    in
+    if node.isExpanded then
+        flattenChildrenHelp (depth + 1) node.id node.children withSelf
+
+    else
+        withSelf
+
+
+flattenChildrenHelp : Int -> id -> List (TreeNode id) -> List (FlatNode id) -> List (FlatNode id)
+flattenChildrenHelp depth parentId children acc =
+    case children of
+        [] ->
+            acc
+
+        [ only ] ->
+            flattenHelp depth (Just parentId) True only acc
+
+        first :: rest ->
+            let
+                afterFirst =
+                    flattenHelp depth (Just parentId) False first acc
+            in
+            flattenChildrenHelp depth parentId rest afterFirst
+
+
+
+-- FIND NODE
+
+
+{-| Find a node by its id anywhere in the tree.
+
+    findNode "child-2" root
+    -- Just { id = "child-2", children = [], isExpanded = False }
+-}
+findNode : id -> TreeNode id -> Maybe (TreeNode id)
+findNode targetId ((TreeNode n) as node) =
+    if n.id == targetId then
+        Just node
+
+    else
+        findNodeInList targetId n.children
+
+
+findNodeInList : id -> List (TreeNode id) -> Maybe (TreeNode id)
+findNodeInList targetId nodes =
+    case nodes of
+        [] ->
+            Nothing
+
+        first :: rest ->
+            case findNode targetId first of
+                Just found ->
+                    Just found
+
+                Nothing ->
+                    findNodeInList targetId rest
+
+
+
+-- NODE DEPTH
+
+
+{-| Find the depth of a node in the tree, where the root is at depth 0.
+
+Returns Nothing if the node is not found.
+
+    nodeDepth "grandchild" root
+    -- Just 2
+-}
+nodeDepth : id -> TreeNode id -> Maybe Int
+nodeDepth targetId node =
+    nodeDepthHelp targetId 0 node
+
+
+nodeDepthHelp : id -> Int -> TreeNode id -> Maybe Int
+nodeDepthHelp targetId depth (TreeNode node) =
+    if node.id == targetId then
+        Just depth
+
+    else
+        nodeDepthInList targetId (depth + 1) node.children
+
+
+nodeDepthInList : id -> Int -> List (TreeNode id) -> Maybe Int
+nodeDepthInList targetId depth nodes =
+    case nodes of
+        [] ->
+            Nothing
+
+        first :: rest ->
+            case nodeDepthHelp targetId depth first of
+                Just d ->
+                    Just d
+
+                Nothing ->
+                    nodeDepthInList targetId depth rest
+
+
+
+-- NODE CHILDREN
+
+
+{-| Get the direct children of a node by its id.
+
+Returns an empty list if the node is not found.
+
+    nodeChildren "parent" root
+    -- [ child1, child2 ]
+-}
+nodeChildren : id -> TreeNode id -> List (TreeNode id)
+nodeChildren targetId node =
+    findNode targetId node
+        |> Maybe.map nodeChildrenList
+        |> Maybe.withDefault []
+
+
+
+-- ANCESTORS
+
+
+{-| Get all ancestor ids of a node, ordered from root to immediate parent.
+
+Returns an empty list if the node is the root or is not found.
+
+    ancestors "grandchild" root
+    -- [ "root", "parent" ]
+-}
+ancestors : id -> TreeNode id -> List id
+ancestors targetId root =
+    ancestorsHelp targetId root []
+        |> Maybe.withDefault []
+
+
+ancestorsHelp : id -> TreeNode id -> List id -> Maybe (List id)
+ancestorsHelp targetId (TreeNode node) path =
+    if node.id == targetId then
+        Just path
+
+    else
+        ancestorsInList targetId node.children (path ++ [ node.id ])
+
+
+ancestorsInList : id -> List (TreeNode id) -> List id -> Maybe (List id)
+ancestorsInList targetId nodes path =
+    case nodes of
+        [] ->
+            Nothing
+
+        first :: rest ->
+            case ancestorsHelp targetId first path of
+                Just found ->
+                    Just found
+
+                Nothing ->
+                    ancestorsInList targetId rest path
+
+
+
+-- DESCENDANTS
+
+
+{-| Get all descendant ids of a node (children, grandchildren, etc.).
+
+Returns an empty list if the node is not found.
+
+    descendants "parent" root
+    -- [ "child1", "child2", "grandchild1" ]
+-}
+descendants : id -> TreeNode id -> List id
+descendants targetId root =
+    findNode targetId root
+        |> Maybe.map (\node -> collectDescendants node [])
+        |> Maybe.withDefault []
+
+
+collectDescendants : TreeNode id -> List id -> List id
+collectDescendants (TreeNode node) acc =
+    List.foldl collectDescendantChild acc node.children
+
+
+collectDescendantChild : TreeNode id -> List id -> List id
+collectDescendantChild ((TreeNode n) as child) acc =
+    collectDescendants child (n.id :: acc)
+
+
+
+-- IS ANCESTOR OF
+
+
+{-| Check if the first id is an ancestor of the second id in the tree.
+
+    isAncestorOf "root" "grandchild" root
+    -- True
+
+    isAncestorOf "grandchild" "root" root
+    -- False
+-}
+isAncestorOf : id -> id -> TreeNode id -> Bool
+isAncestorOf ancestorId descendantId root =
+    List.member ancestorId (ancestors descendantId root)
+
+
+
+-- IS VALID MOVE
+
+
+{-| Check whether moving a node to a target location is valid.
+
+Returns False if the target is a descendant of the source (which would
+create a cycle) or if the source and target are the same node.
+
+    isValidMove "parent" "grandchild" root
+    -- False (grandchild is a descendant of parent)
+
+    isValidMove "child1" "child2" root
+    -- True
+-}
+isValidMove : id -> id -> TreeNode id -> Bool
+isValidMove sourceId targetId root =
+    if sourceId == targetId then
+        False
+
+    else
+        not (isAncestorOf sourceId targetId root)
+
+
+
+-- EXPAND / COLLAPSE / TOGGLE
+
+
+{-| Set `isExpanded` to True for the node with the given id.
+
+Nodes not matching the id are left unchanged. If the id is not found,
+the tree is returned as-is.
+
+    expandNode "folder" root
+-}
+expandNode : id -> TreeNode id -> TreeNode id
+expandNode targetId node =
+    mapNode targetId (\(TreeNode n) -> TreeNode { n | isExpanded = True }) node
+
+
+{-| Set `isExpanded` to False for the node with the given id.
+
+    collapseNode "folder" root
+-}
+collapseNode : id -> TreeNode id -> TreeNode id
+collapseNode targetId node =
+    mapNode targetId (\(TreeNode n) -> TreeNode { n | isExpanded = False }) node
+
+
+{-| Toggle `isExpanded` for the node with the given id.
+
+    toggleNode "folder" root
+-}
+toggleNode : id -> TreeNode id -> TreeNode id
+toggleNode targetId node =
+    mapNode targetId (\(TreeNode n) -> TreeNode { n | isExpanded = not n.isExpanded }) node
+
+
+mapNode : id -> (TreeNode id -> TreeNode id) -> TreeNode id -> TreeNode id
+mapNode targetId transform ((TreeNode n) as node) =
+    if n.id == targetId then
+        transform node
+
+    else
+        TreeNode { n | children = List.map (mapNode targetId transform) n.children }
+
+
+
+-- NODE STATE
+
+
+{-| Compute the visual state of a flattened node during a drag operation.
+
+Takes a context record with the currently dragged id, hovered id, and
+drop position, along with the flattened node and the full tree (for
+ancestor lookups).
+
+    nodeState
+        { draggedId = Just "item-1", overId = Just "item-3", dropPosition = Just Inside }
+        flatNode
+        root
+-}
+nodeState :
+    { draggedId : Maybe id, overId : Maybe id, dropPosition : Maybe DropPosition }
+    -> FlatNode id
+    -> TreeNode id
+    -> TreeNodeState
+nodeState context flat root =
+    let
+        isDragging =
+            Maybe.map (\d -> d == flat.id) context.draggedId
+                |> Maybe.withDefault False
+
+        isOver =
+            Maybe.map (\o -> o == flat.id) context.overId
+                |> Maybe.withDefault False
+
+        dropPos =
+            if isOver then
+                context.dropPosition
+
+            else
+                Nothing
+
+        isAncestor =
+            Maybe.map (\d -> isAncestorOf flat.id d root) context.draggedId
+                |> Maybe.withDefault False
+    in
+    { isDragging = isDragging
+    , isOver = isOver
+    , dropPosition = dropPos
+    , depth = flat.depth
+    , isAncestorOfDragged = isAncestor
+    }
+
+
+
+-- MOVE FROM DROP
+
+
+{-| Construct a TreeMove from a drag source, drop target, and drop position.
+
+Returns Nothing if the move would be invalid (e.g., moving a node into
+its own subtree).
+
+    moveFromDrop "dragged" "target" Inside root
+    -- Just { nodeId = "dragged", fromParent = ..., toParent = ..., toPosition = Inside, toIndex = ... }
+-}
+moveFromDrop : id -> id -> DropPosition -> TreeNode id -> Maybe (TreeMove id)
+moveFromDrop sourceId targetId position root =
+    if not (isValidMove sourceId targetId root) then
+        Nothing
+
+    else
+        Just (buildMove sourceId targetId position root)
+
+
+buildMove : id -> id -> DropPosition -> TreeNode id -> TreeMove id
+buildMove sourceId targetId position root =
+    let
+        fromParent =
+            findParentId sourceId root
+
+        toParent =
+            computeToParent targetId position root
+
+        toIndex =
+            computeToIndex sourceId targetId position toParent root
+    in
+    { nodeId = sourceId
+    , fromParent = fromParent
+    , toParent = toParent
+    , toPosition = position
+    , toIndex = toIndex
+    }
+
+
+findParentId : id -> TreeNode id -> Maybe id
+findParentId targetId root =
+    findParentIdHelp targetId root
+
+
+findParentIdHelp : id -> TreeNode id -> Maybe id
+findParentIdHelp targetId (TreeNode node) =
+    if List.any (\c -> nodeId c == targetId) node.children then
+        Just node.id
+
+    else
+        findParentInChildren targetId node.children
+
+
+findParentInChildren : id -> List (TreeNode id) -> Maybe id
+findParentInChildren targetId nodes =
+    case nodes of
+        [] ->
+            Nothing
+
+        first :: rest ->
+            case findParentIdHelp targetId first of
+                Just parentId ->
+                    Just parentId
+
+                Nothing ->
+                    findParentInChildren targetId rest
+
+
+computeToParent : id -> DropPosition -> TreeNode id -> Maybe id
+computeToParent targetId position root =
+    case position of
+        Inside ->
+            Just targetId
+
+        Before ->
+            findParentId targetId root
+
+        After ->
+            findParentId targetId root
+
+
+computeToIndex : id -> id -> DropPosition -> Maybe id -> TreeNode id -> Int
+computeToIndex sourceId targetId position toParentId root =
+    let
+        siblings =
+            getSiblings toParentId root
+
+        siblingsWithoutSource =
+            List.filter (\n -> nodeId n /= sourceId) siblings
+
+        targetIdx =
+            indexOfInNodes targetId siblingsWithoutSource
+                |> Maybe.withDefault (List.length siblingsWithoutSource)
+    in
+    case position of
+        Before ->
+            targetIdx
+
+        After ->
+            targetIdx + 1
+
+        Inside ->
+            let
+                targetChildren =
+                    nodeChildren targetId root
+
+                filteredChildren =
+                    List.filter (\n -> nodeId n /= sourceId) targetChildren
+            in
+            List.length filteredChildren
+
+
+getSiblings : Maybe id -> TreeNode id -> List (TreeNode id)
+getSiblings parentId root =
+    case parentId of
+        Nothing ->
+            [ root ]
+
+        Just pid ->
+            nodeChildren pid root
+
+
+indexOfInNodes : id -> List (TreeNode id) -> Maybe Int
+indexOfInNodes targetId nodes =
+    indexOfInNodesHelp targetId 0 nodes
+
+
+indexOfInNodesHelp : id -> Int -> List (TreeNode id) -> Maybe Int
+indexOfInNodesHelp targetId idx nodes =
+    case nodes of
+        [] ->
+            Nothing
+
+        first :: rest ->
+            if nodeId first == targetId then
+                Just idx
+
+            else
+                indexOfInNodesHelp targetId (idx + 1) rest
+
+
+
+-- APPLY MOVE
+
+
+{-| Apply a TreeMove to a tree, relocating the specified node.
+
+The node is removed from its current position and inserted at the
+location described by the move. If the node is not found, the tree
+is returned unchanged.
+
+    applyMove move root
+-}
+applyMove : TreeMove id -> TreeNode id -> TreeNode id
+applyMove move root =
+    case findNode move.nodeId root of
+        Nothing ->
+            root
+
+        Just movedNode ->
+            let
+                treeWithout =
+                    removeNode move.nodeId root
+            in
+            insertNode movedNode move.toParent move.toIndex treeWithout
+
+
+removeNode : id -> TreeNode id -> TreeNode id
+removeNode targetId (TreeNode node) =
+    TreeNode
+        { node
+            | children =
+                node.children
+                    |> List.filter (\c -> nodeId c /= targetId)
+                    |> List.map (removeNode targetId)
+        }
+
+
+insertNode : TreeNode id -> Maybe id -> Int -> TreeNode id -> TreeNode id
+insertNode movedNode targetParentId index root =
+    case targetParentId of
+        Nothing ->
+            root
+
+        Just parentId ->
+            insertNodeAtParent movedNode parentId index root
+
+
+insertNodeAtParent : TreeNode id -> id -> Int -> TreeNode id -> TreeNode id
+insertNodeAtParent movedNode parentId index (TreeNode node) =
+    if node.id == parentId then
+        TreeNode { node | children = insertAtIndex index movedNode node.children }
+
+    else
+        TreeNode
+            { node
+                | children =
+                    List.map (insertNodeAtParent movedNode parentId index) node.children
+            }
+
+
+insertAtIndex : Int -> a -> List a -> List a
+insertAtIndex index item list =
+    if index <= 0 then
+        item :: list
+
+    else
+        case list of
+            [] ->
+                [ item ]
+
+            first :: rest ->
+                first :: insertAtIndex (index - 1) item rest

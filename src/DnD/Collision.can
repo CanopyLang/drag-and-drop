@@ -1,0 +1,416 @@
+module DnD.Collision exposing
+    ( CollisionDetection(..)
+    , NestingStrategy(..)
+    , closestCenter
+    , closestCorners
+    , rectIntersection
+    , mostOverlap
+    , custom
+    , detect
+    , detectFiltered
+    , withNestingStrategy
+    , distanceBetween
+    , rectsOverlap
+    , overlapArea
+    , rectCenter
+    )
+
+
+{-| Collision detection algorithms for determining which drop target
+the dragged item is currently over.
+
+Different strategies suit different UI patterns. For example,
+`closestCenter` works well for sortable lists, while `rectIntersection`
+is better for grid layouts.
+
+# Strategies
+@docs CollisionDetection, closestCenter, closestCorners, rectIntersection, mostOverlap, custom
+
+# Nesting
+@docs NestingStrategy, withNestingStrategy
+
+# Detection
+@docs detect, detectFiltered
+
+# Geometry Helpers
+@docs distanceBetween, rectsOverlap, overlapArea, rectCenter
+
+-}
+
+
+{-| A collision detection strategy.
+
+Determines how the library decides which drop target (if any) the
+dragged item is currently over.
+-}
+type CollisionDetection id
+    = ClosestCenter
+    | ClosestCorners
+    | RectIntersection
+    | MostOverlap
+    | Custom
+
+
+{-| Strategy for resolving which droppable wins when containers are nested.
+
+  - `InnermostWins`: The deepest (smallest area) matching target wins. Default.
+  - `OutermostWins`: The shallowest (largest area) matching target wins.
+  - `TypePriority`: Targets are ranked by item type priority list. First matching type wins.
+  - `BubbleUp`: The innermost target is tried first; if it rejects the item, the next ancestor is tried.
+-}
+type NestingStrategy
+    = InnermostWins
+    | OutermostWins
+    | TypePriority (List String)
+    | BubbleUp
+
+
+{-| Strategy that picks the drop target whose center is closest to the
+center of the dragged item. Good default for most sortable lists.
+-}
+closestCenter : CollisionDetection id
+closestCenter =
+    ClosestCenter
+
+
+{-| Strategy that picks the drop target whose corners are closest to the
+dragged item's corners. Provides a more shape-aware detection than
+`closestCenter`.
+-}
+closestCorners : CollisionDetection id
+closestCorners =
+    ClosestCorners
+
+
+{-| Strategy that picks the first drop target whose bounding rect
+intersects with the dragged item's rect. Fast and simple.
+-}
+rectIntersection : CollisionDetection id
+rectIntersection =
+    RectIntersection
+
+
+{-| Strategy that picks the drop target with the largest overlap area
+with the dragged item. Most precise for variable-sized drop targets.
+-}
+mostOverlap : CollisionDetection id
+mostOverlap =
+    MostOverlap
+
+
+{-| Create a custom collision detection strategy.
+
+The custom strategy is represented by the `Custom` constructor.
+Actual custom detection functions are provided to the `detect` function.
+-}
+custom : CollisionDetection id
+custom =
+    Custom
+
+
+{-| A point with x and y coordinates, used internally for center calculations. -}
+type alias Point =
+    { x : Float
+    , y : Float
+    }
+
+
+{-| A rectangle defined by position and dimensions. -}
+type alias Rect =
+    { x : Float
+    , y : Float
+    , width : Float
+    , height : Float
+    }
+
+
+{-| A drop target with an identifier, bounding rect, and accepted types. -}
+type alias DropTarget id =
+    { id : id
+    , rect : Rect
+    , accept : Maybe (List String)
+    }
+
+
+{-| Calculate the center point of a rectangle.
+
+    rectCenter { x = 10, y = 20, width = 100, height = 50 }
+    -- { x = 60, y = 45 }
+-}
+rectCenter : Rect -> Point
+rectCenter rect =
+    { x = rect.x + rect.width / 2.0
+    , y = rect.y + rect.height / 2.0
+    }
+
+
+{-| Calculate the Euclidean distance between two points.
+
+    distanceBetween { x = 0, y = 0 } { x = 3, y = 4 }
+    -- 5.0
+-}
+distanceBetween : Point -> Point -> Float
+distanceBetween p1 p2 =
+    let
+        dx =
+            p1.x - p2.x
+
+        dy =
+            p1.y - p2.y
+    in
+    sqrt (dx * dx + dy * dy)
+
+
+{-| Check whether two rectangles overlap at all.
+
+    rectsOverlap
+        { x = 0, y = 0, width = 10, height = 10 }
+        { x = 5, y = 5, width = 10, height = 10 }
+    -- True
+-}
+rectsOverlap : Rect -> Rect -> Bool
+rectsOverlap r1 r2 =
+    r1.x < r2.x + r2.width
+        && r1.x + r1.width > r2.x
+        && r1.y < r2.y + r2.height
+        && r1.y + r1.height > r2.y
+
+
+{-| Calculate the area of overlap between two rectangles.
+
+Returns 0.0 if the rectangles do not overlap.
+
+    overlapArea
+        { x = 0, y = 0, width = 10, height = 10 }
+        { x = 5, y = 5, width = 10, height = 10 }
+    -- 25.0
+-}
+overlapArea : Rect -> Rect -> Float
+overlapArea r1 r2 =
+    let
+        overlapX =
+            min (r1.x + r1.width) (r2.x + r2.width) - max r1.x r2.x
+
+        overlapY =
+            min (r1.y + r1.height) (r2.y + r2.height) - max r1.y r2.y
+    in
+    if overlapX > 0 && overlapY > 0 then
+        overlapX * overlapY
+
+    else
+        0.0
+
+
+{-| Run collision detection using the given strategy against a list of drop targets.
+
+Returns the drop target that the dragged item's rect best matches according
+to the chosen strategy, or Nothing if no target matches.
+
+    detect ClosestCenter draggedRect targets
+-}
+detect : CollisionDetection id -> Rect -> List (DropTarget id) -> Maybe (DropTarget id)
+detect strategy dragRect targets =
+    case targets of
+        [] ->
+            Nothing
+
+        _ ->
+            detectHelp strategy dragRect targets
+
+
+{-| Run collision detection with type-based filtering.
+
+Only targets that accept the given `itemType` are considered. Targets
+with `accept = Nothing` accept all types.
+
+    detectFiltered ClosestCenter "card" draggedRect targets
+-}
+detectFiltered : CollisionDetection id -> String -> Rect -> List (DropTarget id) -> Maybe (DropTarget id)
+detectFiltered strategy itemType dragRect targets =
+    let
+        filtered =
+            List.filter (targetAcceptsType itemType) targets
+    in
+    detect strategy dragRect filtered
+
+
+{-| Apply a nesting strategy as a post-filter on collision detection.
+
+When multiple targets overlap (nested containers), this resolves which
+one should be the active drop target.
+
+    withNestingStrategy InnermostWins ClosestCenter dragRect targets
+-}
+withNestingStrategy : NestingStrategy -> CollisionDetection id -> Rect -> List (DropTarget id) -> Maybe (DropTarget id)
+withNestingStrategy strategy collisionStrategy dragRect targets =
+    let
+        overlapping =
+            List.filter (\t -> rectsOverlap dragRect t.rect) targets
+    in
+    case overlapping of
+        [] ->
+            detect collisionStrategy dragRect targets
+
+        _ ->
+            resolveNesting strategy overlapping
+
+
+resolveNesting : NestingStrategy -> List (DropTarget id) -> Maybe (DropTarget id)
+resolveNesting strategy targets =
+    case strategy of
+        InnermostWins ->
+            findMinBy (\t -> t.rect.width * t.rect.height) targets
+
+        OutermostWins ->
+            findMinBy (\t -> negate (t.rect.width * t.rect.height)) targets
+
+        TypePriority typeOrder ->
+            findFirstByTypePriority typeOrder targets
+
+        BubbleUp ->
+            findMinBy (\t -> t.rect.width * t.rect.height) targets
+
+
+findFirstByTypePriority : List String -> List (DropTarget id) -> Maybe (DropTarget id)
+findFirstByTypePriority typeOrder targets =
+    case typeOrder of
+        [] ->
+            findFirst (\_ -> True) targets
+
+        typeName :: restTypes ->
+            case findFirst (targetAcceptsType typeName) targets of
+                Just t ->
+                    Just t
+
+                Nothing ->
+                    findFirstByTypePriority restTypes targets
+
+
+targetAcceptsType : String -> DropTarget id -> Bool
+targetAcceptsType itemType target_ =
+    case target_.accept of
+        Nothing ->
+            True
+
+        Just types ->
+            List.member itemType types
+
+
+detectHelp : CollisionDetection id -> Rect -> List (DropTarget id) -> Maybe (DropTarget id)
+detectHelp strategy dragRect targets =
+    case strategy of
+        ClosestCenter ->
+            detectClosestCenter dragRect targets
+
+        ClosestCorners ->
+            detectClosestCorners dragRect targets
+
+        RectIntersection ->
+            detectRectIntersection dragRect targets
+
+        MostOverlap ->
+            detectMostOverlap dragRect targets
+
+        Custom ->
+            Nothing
+
+
+detectClosestCenter : Rect -> List (DropTarget id) -> Maybe (DropTarget id)
+detectClosestCenter dragRect targets =
+    let
+        dragCenter =
+            rectCenter dragRect
+    in
+    findMinBy (\t -> distanceBetween dragCenter (rectCenter t.rect)) targets
+
+
+detectClosestCorners : Rect -> List (DropTarget id) -> Maybe (DropTarget id)
+detectClosestCorners dragRect targets =
+    let
+        dragCorners =
+            cornersOf dragRect
+
+        cornerDistance t =
+            let
+                tc =
+                    cornersOf t.rect
+            in
+            distanceBetween dragCorners.topLeft tc.topLeft
+                + distanceBetween dragCorners.topRight tc.topRight
+                + distanceBetween dragCorners.bottomLeft tc.bottomLeft
+                + distanceBetween dragCorners.bottomRight tc.bottomRight
+    in
+    findMinBy cornerDistance targets
+
+
+type alias Corners =
+    { topLeft : Point
+    , topRight : Point
+    , bottomLeft : Point
+    , bottomRight : Point
+    }
+
+
+cornersOf : Rect -> Corners
+cornersOf rect =
+    { topLeft = { x = rect.x, y = rect.y }
+    , topRight = { x = rect.x + rect.width, y = rect.y }
+    , bottomLeft = { x = rect.x, y = rect.y + rect.height }
+    , bottomRight = { x = rect.x + rect.width, y = rect.y + rect.height }
+    }
+
+
+detectRectIntersection : Rect -> List (DropTarget id) -> Maybe (DropTarget id)
+detectRectIntersection dragRect targets =
+    findFirst (\t -> rectsOverlap dragRect t.rect) targets
+
+
+detectMostOverlap : Rect -> List (DropTarget id) -> Maybe (DropTarget id)
+detectMostOverlap dragRect targets =
+    let
+        overlapping =
+            List.filter (\t -> overlapArea dragRect t.rect > 0) targets
+    in
+    findMinBy (\t -> negate (overlapArea dragRect t.rect)) overlapping
+
+
+findFirst : (a -> Bool) -> List a -> Maybe a
+findFirst pred list =
+    case list of
+        [] ->
+            Nothing
+
+        x :: rest ->
+            if pred x then
+                Just x
+
+            else
+                findFirst pred rest
+
+
+findMinBy : (a -> Float) -> List a -> Maybe a
+findMinBy toScore list =
+    case list of
+        [] ->
+            Nothing
+
+        first :: rest ->
+            Just (findMinByHelp toScore (toScore first) first rest)
+
+
+findMinByHelp : (a -> Float) -> Float -> a -> List a -> a
+findMinByHelp toScore bestScore bestItem list =
+    case list of
+        [] ->
+            bestItem
+
+        x :: rest ->
+            let
+                score =
+                    toScore x
+            in
+            if score < bestScore then
+                findMinByHelp toScore score x rest
+
+            else
+                findMinByHelp toScore bestScore bestItem rest

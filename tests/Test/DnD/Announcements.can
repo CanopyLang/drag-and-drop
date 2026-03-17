@@ -1,0 +1,92 @@
+module Test.DnD.Announcements exposing (main, tests)
+
+import Basics exposing (..)
+import DnD.Announcements exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.Announcements"
+        [ formatPickedUpTests
+        , formatMovedTests
+        , formatDroppedTests
+        , formatCancelledTests
+        , constructorTests
+        ]
+
+
+formatPickedUpTests : Test
+formatPickedUpTests =
+    describe "formatPickedUp"
+        [ test "formats with name and position" <|
+            \() ->
+                formatPickedUp "Task 1" 2 5
+                    |> Expect.equal "Picked up Task 1. Current position 2 of 5."
+        , test "formats first position" <|
+            \() ->
+                formatPickedUp "Item" 1 1
+                    |> Expect.equal "Picked up Item. Current position 1 of 1."
+        ]
+
+
+formatMovedTests : Test
+formatMovedTests =
+    describe "formatMoved"
+        [ test "formats move announcement" <|
+            \() ->
+                formatMoved "Task 1" 3 5
+                    |> Expect.equal "Moved Task 1. New position 3 of 5."
+        , test "formats last position" <|
+            \() ->
+                formatMoved "Card" 5 5
+                    |> Expect.equal "Moved Card. New position 5 of 5."
+        ]
+
+
+formatDroppedTests : Test
+formatDroppedTests =
+    describe "formatDropped"
+        [ test "formats drop announcement" <|
+            \() ->
+                formatDropped "Task 1" 3 5
+                    |> Expect.equal "Dropped Task 1. Final position 3 of 5."
+        ]
+
+
+formatCancelledTests : Test
+formatCancelledTests =
+    describe "formatCancelled"
+        [ test "formats cancel announcement" <|
+            \() ->
+                formatCancelled "Task 1" 2 5
+                    |> Expect.equal "Reorder cancelled. Task 1 returned to position 2 of 5."
+        ]
+
+
+constructorTests : Test
+constructorTests =
+    describe "constructors"
+        [ test "defaults creates Default" <|
+            \() ->
+                case defaults of
+                    Default ->
+                        Expect.pass
+
+                    None ->
+                        Expect.fail "Expected Default"
+        , test "none creates None" <|
+            \() ->
+                case none of
+                    Default ->
+                        Expect.fail "Expected None"
+
+                    None ->
+                        Expect.pass
+        ]

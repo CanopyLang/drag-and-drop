@@ -1,0 +1,538 @@
+module DnD.Resize exposing
+    ( HandlePosition(..)
+    , ResizeConfig
+    , ResizeState
+    , ResizeResult
+    , defaultConfig
+    , initState
+    , startResize
+    , updateResize
+    , endResize
+    , isResizing
+    , currentRect
+    , handlePositions
+    , handleCursor
+    , applyConstraints
+    )
+
+
+{-| Resize handle support with 8-position handles.
+
+Provides state management for resize operations where the user drags one
+of eight handles around a rectangle to change its dimensions. Each handle
+constrains which edges move: corner handles move two edges, side handles
+move one. Optional constraints include minimum and maximum dimensions,
+aspect ratio locking, and grid snapping.
+
+Integrate this into a TEA model by storing a `ResizeState`, calling
+`startResize` on pointer-down over a handle, `updateResize` on every
+pointer-move, and `endResize` on pointer-up.
+
+# Handle Positions
+@docs HandlePosition, handlePositions, handleCursor
+
+# Configuration
+@docs ResizeConfig, defaultConfig
+
+# State
+@docs ResizeState, initState, isResizing, currentRect
+
+# Lifecycle
+@docs startResize, updateResize, endResize
+
+# Results
+@docs ResizeResult
+
+# Constraints
+@docs applyConstraints
+
+-}
+
+
+import DnD exposing (Delta, Point, Rect)
+
+
+
+-- TYPES
+
+
+{-| The eight handle positions around a rectangle.
+
+Cardinal handles (North, South, East, West) constrain resizing to a
+single axis. Corner handles (NorthEast, NorthWest, SouthEast, SouthWest)
+allow simultaneous resizing on both axes.
+-}
+type HandlePosition
+    = North
+    | South
+    | East
+    | West
+    | NorthEast
+    | NorthWest
+    | SouthEast
+    | SouthWest
+
+
+{-| Configuration for resize behaviour.
+
+  - `minWidth` / `minHeight` — smallest allowed dimensions (clamped, never
+    violated). Defaults to 20 pixels each.
+  - `maxWidth` / `maxHeight` — optional upper bounds on dimensions.
+  - `lockAspectRatio` — when `True`, the aspect ratio of `startRect` is
+    preserved throughout the resize.
+  - `snapToGrid` — when provided, final dimensions and position are
+    rounded to the nearest grid increment.
+
+-}
+type alias ResizeConfig =
+    { minWidth : Float
+    , minHeight : Float
+    , maxWidth : Maybe Float
+    , maxHeight : Maybe Float
+    , lockAspectRatio : Bool
+    , snapToGrid : Maybe { x : Float, y : Float }
+    }
+
+
+{-| Opaque resize state. Stores the active resize if one is in progress.
+-}
+type alias ResizeState =
+    { active : Maybe ActiveResize
+    }
+
+
+{-| Internal record tracking a resize in flight. Stored inside
+`ResizeState.active` while the user drags a handle.
+-}
+type alias ActiveResize =
+    { handle : HandlePosition
+    , startRect : Rect
+    , currentRect : Rect
+    , startPoint : Point
+    }
+
+
+{-| The result returned when a resize completes. Contains the final
+rectangle and the net change in width and height relative to the original
+rectangle.
+-}
+type alias ResizeResult =
+    { rect : Rect
+    , widthDelta : Float
+    , heightDelta : Float
+    }
+
+
+
+-- DEFAULTS
+
+
+{-| Sensible default configuration.
+
+    { minWidth = 20
+    , minHeight = 20
+    , maxWidth = Nothing
+    , maxHeight = Nothing
+    , lockAspectRatio = False
+    , snapToGrid = Nothing
+    }
+
+-}
+defaultConfig : ResizeConfig
+defaultConfig =
+    { minWidth = 20
+    , minHeight = 20
+    , maxWidth = Nothing
+    , maxHeight = Nothing
+    , lockAspectRatio = False
+    , snapToGrid = Nothing
+    }
+
+
+{-| Initial state with no resize in progress. -}
+initState : ResizeState
+initState =
+    { active = Nothing }
+
+
+
+-- LIFECYCLE
+
+
+{-| Begin a resize operation.
+
+Records the handle being dragged, the original rectangle, and the pointer
+position at the start. Subsequent calls to `updateResize` will compute
+new rectangles relative to this starting state.
+-}
+startResize : HandlePosition -> Rect -> Point -> ResizeState -> ResizeState
+startResize handle rect point _ =
+    { active =
+        Just
+            { handle = handle
+            , startRect = rect
+            , currentRect = rect
+            , startPoint = point
+            }
+    }
+
+
+{-| Update the resize with a new pointer position.
+
+Calculates the pointer delta from the start point, applies the delta to
+the appropriate edges based on the handle position, then enforces all
+constraints from `ResizeConfig` (min/max, aspect ratio, grid snap).
+
+Has no effect if no resize is active.
+-}
+updateResize : ResizeConfig -> Point -> ResizeState -> ResizeState
+updateResize config point state =
+    case state.active of
+        Nothing ->
+            state
+
+        Just active ->
+            { active = Just (updateActive config point active) }
+
+
+{-| End the current resize and return the final result.
+
+Returns `Nothing` if no resize was active. Otherwise returns the final
+rectangle and the net width/height deltas, and resets the state.
+-}
+endResize : ResizeState -> ( ResizeState, Maybe ResizeResult )
+endResize state =
+    case state.active of
+        Nothing ->
+            ( state, Nothing )
+
+        Just active ->
+            ( initState
+            , Just
+                { rect = active.currentRect
+                , widthDelta = active.currentRect.width - active.startRect.width
+                , heightDelta = active.currentRect.height - active.startRect.height
+                }
+            )
+
+
+
+-- QUERIES
+
+
+{-| Check whether a resize operation is currently in progress. -}
+isResizing : ResizeState -> Bool
+isResizing state =
+    case state.active of
+        Just _ ->
+            True
+
+        Nothing ->
+            False
+
+
+{-| Get the current rectangle during an active resize.
+
+Returns `Nothing` when no resize is in progress.
+-}
+currentRect : ResizeState -> Maybe Rect
+currentRect state =
+    Maybe.map .currentRect state.active
+
+
+{-| All eight handle positions in clockwise order starting from North.
+Useful for rendering handle elements around a selection rectangle.
+-}
+handlePositions : List HandlePosition
+handlePositions =
+    [ North
+    , NorthEast
+    , East
+    , SouthEast
+    , South
+    , SouthWest
+    , West
+    , NorthWest
+    ]
+
+
+{-| The CSS cursor value appropriate for a given handle position.
+
+Maps each position to the standard CSS resize cursor:
+
+    handleCursor North     -- "n-resize"
+    handleCursor SouthEast -- "se-resize"
+
+-}
+handleCursor : HandlePosition -> String
+handleCursor position =
+    cursorForPosition position
+
+
+
+-- CONSTRAINTS
+
+
+{-| Apply min/max and grid-snap constraints to a rectangle.
+
+This is called internally by `updateResize` but is also exposed so that
+external code can enforce the same constraints on programmatically
+constructed rectangles.
+-}
+applyConstraints : ResizeConfig -> Rect -> Rect
+applyConstraints config rect =
+    rect
+        |> clampDimensions config
+        |> snapToGridIfConfigured config
+
+
+
+-- INTERNAL HELPERS
+
+
+{-| Update the active resize record with a new pointer position. -}
+updateActive : ResizeConfig -> Point -> ActiveResize -> ActiveResize
+updateActive config point active =
+    let
+        dx =
+            point.x - active.startPoint.x
+
+        dy =
+            point.y - active.startPoint.y
+
+        rawRect =
+            applyHandleDelta active.handle dx dy active.startRect
+
+        constrained =
+            applyConstraints config rawRect
+
+        final =
+            applyAspectRatioIfLocked config active.handle active.startRect constrained
+    in
+    { active | currentRect = final }
+
+
+{-| Apply the pointer delta to the rectangle edges controlled by the
+given handle. Each branch adjusts only its own edges, keeping the
+opposite edges fixed. Corner handles compose two edge-movers.
+-}
+applyHandleDelta : HandlePosition -> Float -> Float -> Rect -> Rect
+applyHandleDelta handle dx dy rect =
+    case handle of
+        North ->
+            moveNorthEdge dy rect
+
+        South ->
+            moveSouthEdge dy rect
+
+        East ->
+            moveEastEdge dx rect
+
+        West ->
+            moveWestEdge dx rect
+
+        NorthEast ->
+            rect |> moveNorthEdge dy |> moveEastEdge dx
+
+        NorthWest ->
+            rect |> moveNorthEdge dy |> moveWestEdge dx
+
+        SouthEast ->
+            rect |> moveSouthEdge dy |> moveEastEdge dx
+
+        SouthWest ->
+            rect |> moveSouthEdge dy |> moveWestEdge dx
+
+
+{-| Move the north (top) edge by `dy` pixels. A negative `dy` expands
+the rectangle upward; a positive `dy` shrinks it.
+-}
+moveNorthEdge : Float -> Rect -> Rect
+moveNorthEdge dy rect =
+    { rect
+        | y = rect.y + dy
+        , height = rect.height - dy
+    }
+
+
+{-| Move the south (bottom) edge by `dy` pixels. A positive `dy` expands
+the rectangle downward.
+-}
+moveSouthEdge : Float -> Rect -> Rect
+moveSouthEdge dy rect =
+    { rect | height = rect.height + dy }
+
+
+{-| Move the east (right) edge by `dx` pixels. A positive `dx` expands
+the rectangle to the right.
+-}
+moveEastEdge : Float -> Rect -> Rect
+moveEastEdge dx rect =
+    { rect | width = rect.width + dx }
+
+
+{-| Move the west (left) edge by `dx` pixels. A negative `dx` expands
+the rectangle to the left.
+-}
+moveWestEdge : Float -> Rect -> Rect
+moveWestEdge dx rect =
+    { rect
+        | x = rect.x + dx
+        , width = rect.width - dx
+    }
+
+
+{-| Clamp width and height to the configured min/max bounds.
+
+Position (`x`, `y`) is left unchanged because the edge-movement functions
+have already positioned the rectangle correctly. Clamping only prevents
+dimensions from exceeding the allowed range.
+-}
+clampDimensions : ResizeConfig -> Rect -> Rect
+clampDimensions config rect =
+    { rect
+        | width =
+            rect.width
+                |> max config.minWidth
+                |> clampMax config.maxWidth
+        , height =
+            rect.height
+                |> max config.minHeight
+                |> clampMax config.maxHeight
+    }
+
+
+{-| Clamp a value to an optional maximum. -}
+clampMax : Maybe Float -> Float -> Float
+clampMax maybeMax value =
+    case maybeMax of
+        Nothing ->
+            value
+
+        Just m ->
+            min value m
+
+
+{-| Round position and dimensions to the nearest grid increment when grid
+snapping is configured. Has no effect when `snapToGrid` is `Nothing`.
+-}
+snapToGridIfConfigured : ResizeConfig -> Rect -> Rect
+snapToGridIfConfigured config rect =
+    case config.snapToGrid of
+        Nothing ->
+            rect
+
+        Just grid ->
+            { x = snapValue grid.x rect.x
+            , y = snapValue grid.y rect.y
+            , width = snapValue grid.x rect.width
+            , height = snapValue grid.y rect.height
+            }
+
+
+{-| Round a value to the nearest multiple of the given grid increment.
+Handles zero-increment gracefully by returning the original value.
+-}
+snapValue : Float -> Float -> Float
+snapValue increment value =
+    if increment <= 0 then
+        value
+    else
+        toFloat (round (value / increment)) * increment
+
+
+{-| If aspect ratio locking is enabled, constrain the resized rectangle
+to maintain the same aspect ratio as the start rectangle. The dimension
+that changed less (proportionally) is expanded to match the dominant
+dimension's ratio. The handle position determines which corner is anchored.
+-}
+applyAspectRatioIfLocked : ResizeConfig -> HandlePosition -> Rect -> Rect -> Rect
+applyAspectRatioIfLocked config handle startRect rect =
+    if not config.lockAspectRatio then
+        rect
+    else if startRect.width <= 0 || startRect.height <= 0 then
+        rect
+    else
+        lockAspectRatio handle (startRect.width / startRect.height) rect
+
+
+{-| Lock a rectangle to a given aspect ratio. Uses the width as the
+dominant dimension and adjusts the height to match, then positions the
+rectangle based on which handle is being dragged so that the anchor
+corner stays fixed.
+-}
+lockAspectRatio : HandlePosition -> Float -> Rect -> Rect
+lockAspectRatio handle ratio rect =
+    let
+        newHeight =
+            rect.width / ratio
+
+        heightDiff =
+            newHeight - rect.height
+    in
+    { x = rect.x
+    , y = adjustYForAspectRatio handle heightDiff rect.y
+    , width = rect.width
+    , height = newHeight
+    }
+
+
+{-| Adjust the y-coordinate when aspect ratio locking changes the height.
+Handles that anchor the bottom edge need the y to shift so the bottom
+stays fixed; handles that anchor the top edge keep y unchanged.
+-}
+adjustYForAspectRatio : HandlePosition -> Float -> Float -> Float
+adjustYForAspectRatio handle heightDiff y =
+    case handle of
+        North ->
+            y - heightDiff
+
+        NorthEast ->
+            y - heightDiff
+
+        NorthWest ->
+            y - heightDiff
+
+        South ->
+            y
+
+        SouthEast ->
+            y
+
+        SouthWest ->
+            y
+
+        East ->
+            y - (heightDiff / 2)
+
+        West ->
+            y - (heightDiff / 2)
+
+
+{-| Map a handle position to its CSS cursor string. -}
+cursorForPosition : HandlePosition -> String
+cursorForPosition position =
+    case position of
+        North ->
+            "n-resize"
+
+        South ->
+            "s-resize"
+
+        East ->
+            "e-resize"
+
+        West ->
+            "w-resize"
+
+        NorthEast ->
+            "ne-resize"
+
+        NorthWest ->
+            "nw-resize"
+
+        SouthEast ->
+            "se-resize"
+
+        SouthWest ->
+            "sw-resize"

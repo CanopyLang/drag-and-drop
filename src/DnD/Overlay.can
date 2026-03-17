@@ -1,0 +1,157 @@
+module DnD.Overlay exposing
+    ( DragSource(..)
+    , viewOverlay
+    , sourceStyles
+    )
+
+
+{-| Drag overlay rendering for the drag-and-drop system.
+
+This module renders a floating overlay element that follows the cursor
+during a drag operation. The overlay uses CSS `position: fixed` to escape
+any `overflow: hidden` containers, solving the common clipping problem
+where dragged items disappear behind ancestor boundaries.
+
+Three strategies control what happens to the original element while its
+overlay clone is shown:
+
+  - **TransformInPlace** -- the original stays visible with transforms
+    applied (the default DnD.Draggable behavior). No overlay is needed.
+  - **HideOriginal** -- the original becomes invisible (`visibility: hidden`)
+    so it still occupies layout space, while the overlay shows the clone.
+  - **DimOriginal** -- the original is rendered at a reduced opacity to hint
+    at where it came from.
+
+# Types
+@docs DragSource
+
+# View
+@docs viewOverlay
+
+# Source styles
+@docs sourceStyles
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import DnD exposing (State, DragOperation(..), DragItem, Delta)
+import Html exposing (Html, Attribute, div, text)
+import Html.Attributes exposing (style, attribute)
+
+
+{-| Strategy for how the original (source) element is displayed while
+its drag overlay is active.
+
+  - `TransformInPlace` -- keep the original visible and apply transforms
+    directly to it. This is the traditional approach used by `DnD.Draggable`
+    and does not require an overlay at all.
+  - `HideOriginal` -- hide the original with `visibility: hidden` so it
+    preserves its layout space while the overlay shows a clone above
+    everything else.
+  - `DimOriginal Float` -- reduce the original's opacity to the given value
+    (between 0.0 and 1.0) to provide a visual "ghost" of the source
+    location while dragging.
+
+-}
+type DragSource
+    = TransformInPlace
+    | HideOriginal
+    | DimOriginal Float
+
+
+{-| Render a fixed-position overlay that follows the active drag.
+
+When no drag is active the function returns an empty `div` so the DOM
+node remains stable (no mount/unmount flicker).
+
+When a drag is active the overlay is positioned at the item's original
+bounding-rect location offset by the current delta, using
+`transform: translate` for GPU-accelerated movement.
+
+The first argument is the current drag-and-drop state. The second
+argument is a rendering function that receives the active `DragItem`
+and the current `Delta` and returns the Html to display inside the
+overlay.
+
+    viewOverlay model.dnd
+        (\item delta ->
+            div [ class "card-clone" ] [ text item.id ]
+        )
+
+-}
+viewOverlay : State id -> (DragItem id -> Delta -> Html msg) -> Html msg
+viewOverlay state renderItem =
+    case state.operation of
+        NotDragging ->
+            div [] []
+
+        Dragging drag ->
+            div
+                [ Css.inlineStyle
+                    [ Css.position Value.fixed
+                    , Css.top (Value.px 0)
+                    , Css.left (Value.px 0)
+                    , Css.width (Value.px drag.item.rect.width)
+                    , Css.height (Value.px drag.item.rect.height)
+                    , Css.pointerEvents Value.none
+                    , Css.zIndex (Value.int_ 10000)
+                    , Css.transform
+                        [ Value.translate
+                            (Value.px (drag.item.rect.x + drag.delta.x))
+                            (Value.px (drag.item.rect.y + drag.delta.y))
+                        ]
+                    ]
+                ]
+                [ renderItem drag.item drag.delta ]
+
+
+{-| Return style attributes for the original (source) element based on
+the chosen `DragSource` strategy.
+
+Apply the returned attributes to the original element alongside your
+normal attributes. When this item is not being dragged the function
+returns an empty list, leaving the element unstyled.
+
+  - `TransformInPlace` always returns `[]` because the caller is
+    expected to use `DnD.Draggable.dragStyles` instead.
+  - `HideOriginal` returns `visibility: hidden` when the given id
+    matches the currently dragged item.
+  - `DimOriginal opacity` returns `opacity: <value>` when the given
+    id matches the currently dragged item.
+
+    div (sourceStyles HideOriginal model.dnd itemId ++ otherAttrs)
+        [ text "I disappear while dragged" ]
+
+-}
+sourceStyles : DragSource -> State id -> id -> List (Attribute msg)
+sourceStyles source state itemId =
+    case source of
+        TransformInPlace ->
+            []
+
+        HideOriginal ->
+            applyWhenDragging state itemId
+                [ Css.visibility Value.hidden ]
+
+        DimOriginal opacityValue ->
+            applyWhenDragging state itemId
+                [ Css.opacity (Value.num opacityValue) ]
+
+
+{-| Apply a list of CSS styles only when the given item id matches
+the currently active drag. Returns an empty list otherwise.
+-}
+applyWhenDragging : State id -> id -> List Style -> List (Attribute msg)
+applyWhenDragging state itemId styles =
+    case state.operation of
+        NotDragging ->
+            []
+
+        Dragging drag ->
+            if drag.item.id == itemId then
+                [ Css.inlineStyle styles ]
+
+            else
+                []

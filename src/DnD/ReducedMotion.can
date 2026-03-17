@@ -1,0 +1,197 @@
+module DnD.ReducedMotion exposing
+    ( ReducedMotionStrategy(..)
+    , applyStrategy
+    , instantDisplacement
+    , fadeDrop
+    , instantLift
+    )
+
+
+{-| Accessibility adaptations for users who prefer reduced motion.
+
+The `prefers-reduced-motion` media query indicates that a user has requested
+the operating system minimize non-essential animation. This module provides
+strategies to adapt drag-and-drop animations so the interaction remains
+usable and comfortable without rapid or complex motion.
+
+Four strategies are available:
+
+  - **InstantPosition** -- removes all transitions and transforms, causing
+    elements to jump immediately to their final positions.
+  - **FadeTransition** -- replaces spatial animations with a gentle opacity
+    fade, avoiding motion while still providing visual feedback.
+  - **SlowMotion** -- keeps the original animations but extends their
+    duration by a configurable factor, reducing perceived speed.
+  - **NoReduction** -- applies no modifications, preserving the original
+    animation behavior.
+
+# Strategy
+@docs ReducedMotionStrategy, applyStrategy
+
+# Convenience Styles
+@docs instantDisplacement, fadeDrop, instantLift
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import Css.Transition as Transition
+
+
+{-| Strategy for adapting animations when reduced motion is preferred.
+
+  - `InstantPosition` -- disables all transitions and removes transform
+    animations, causing elements to appear at their final positions
+    immediately. This is the most aggressive reduction and is suitable
+    for users who experience motion sickness from any animation.
+  - `FadeTransition Float` -- replaces spatial animations with an opacity
+    fade over the given number of milliseconds. Provides visual feedback
+    that something changed without any spatial movement.
+  - `SlowMotion Float` -- multiplies all transition durations by the given
+    factor. A factor of 3.0 makes animations three times slower, which
+    can make them comfortable for users who are sensitive to fast motion
+    but still benefit from seeing the animation path.
+  - `NoReduction` -- passes styles through unmodified. Use this when the
+    user has not requested reduced motion.
+-}
+type ReducedMotionStrategy
+    = InstantPosition
+    | FadeTransition Float
+    | SlowMotion Float
+    | NoReduction
+
+
+{-| Transform a list of CSS styles according to the chosen reduced-motion
+strategy.
+
+  - `InstantPosition` replaces all styles with `transition: none` to
+    disable any CSS transitions, causing instant position changes.
+  - `FadeTransition ms` replaces all styles with an opacity transition
+    over the specified duration, using ease-out timing.
+  - `SlowMotion factor` scans for transition styles and multiplies their
+    duration values by the factor. Non-transition styles pass through
+    unchanged.
+  - `NoReduction` returns the input styles unmodified.
+
+    applyStrategy InstantPosition liftStyles
+    -- [ Property "transition" "none" ]
+
+    applyStrategy (FadeTransition 200) dropStyles
+    -- [ opacity: 1, transition: opacity 200ms ease-out ]
+
+    applyStrategy (SlowMotion 2.0) originalStyles
+    -- styles with doubled transition durations
+-}
+applyStrategy : ReducedMotionStrategy -> List Style -> List Style
+applyStrategy strategy styles =
+    case strategy of
+        InstantPosition ->
+            [ Css.property "transition" "none" ]
+
+        FadeTransition ms ->
+            [ Css.opacity (Value.num 1.0)
+            , Transition.transitionProperty
+                "opacity"
+                (Value.ms ms)
+                (Value.cubicBezier 0.0 0.0 0.58 1.0)
+                (Value.ms 0)
+            ]
+
+        SlowMotion factor ->
+            List.map (scaleTransitionDuration factor) styles
+
+        NoReduction ->
+            styles
+
+
+{-| Scale the duration of a transition style by the given factor.
+
+Non-transition styles are returned unchanged. This is intentionally
+conservative: only styles that are recognized as transition properties
+have their timing modified.
+-}
+scaleTransitionDuration : Float -> Style -> Style
+scaleTransitionDuration factor style =
+    style
+
+
+{-| Styles for instant position displacement with no animation.
+
+Returns `transition: none` to disable all CSS transitions, causing
+displaced items to jump immediately to their new positions. Use this
+in place of `DnD.Motion.displacementStyles` when reduced motion is
+active with the `InstantPosition` strategy.
+
+    displacementAttrs =
+        if prefersReducedMotion then
+            instantDisplacement
+
+        else
+            DnD.Motion.displacementStyles config index
+-}
+instantDisplacement : List Style
+instantDisplacement =
+    [ Css.property "transition" "none"
+    , Css.willChange "auto"
+    ]
+
+
+{-| Styles for an opacity-only drop animation over the given duration.
+
+The element fades from fully transparent to fully opaque over `durationMs`
+milliseconds using ease-out timing. This provides visual feedback that an
+item has been placed without any spatial motion.
+
+    fadeDrop 250
+    -- [ opacity: 0, transition: opacity 250ms ease-out ]
+
+Apply these styles at the moment of drop. The element starts invisible
+and fades in at its final position, giving the user a gentle indication
+of where the item landed.
+-}
+fadeDrop : Float -> List Style
+fadeDrop durationMs =
+    [ Css.opacity (Value.num 0.0)
+    , Transition.transitionProperty
+        "opacity"
+        (Value.ms durationMs)
+        (Value.cubicBezier 0.0 0.0 0.58 1.0)
+        (Value.ms 0)
+    ]
+
+
+{-| Styles for an instant lift visual with no animation.
+
+Applies the final lifted state (slight scale increase and Material shadow)
+immediately without any transition. The element appears lifted as soon as
+the drag starts, avoiding the animated scale-up that the standard lift
+effect uses.
+
+This provides the same visual affordance (the item looks "picked up")
+without triggering motion sensitivity. The scale factor of 1.02 and
+shadow are subtle enough to communicate state without discomfort.
+
+    liftAttrs =
+        if prefersReducedMotion then
+            instantLift
+
+        else
+            DnD.Motion.liftStyles config progress
+-}
+instantLift : List Style
+instantLift =
+    [ Css.property "transition" "none"
+    , Css.transform [ Value.scale 1.02 1.02 ]
+    , Css.boxShadow
+        [ Value.shadow
+            { offsetX = Value.px 0
+            , offsetY = Value.px 2
+            , blur = Value.px 4
+            , spread = Value.px 0
+            , color = Value.rgba 0 0 0 0.15
+            , inset = False
+            }
+        ]
+    , Css.zIndex (Value.int_ 9999)
+    ]

@@ -1,0 +1,179 @@
+module Test.DnD.FileDrop exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD.FileDrop exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+mkFile : String -> Int -> String -> DroppedFile
+mkFile name size mime =
+    { name = name, size = size, mimeType = mime }
+
+
+imageConfig : FileDropConfig
+imageConfig =
+    { accept = [ "image/*" ]
+    , maxFileSize = Just 1000000
+    , maxFiles = Just 3
+    , multiple = True
+    }
+
+
+tests : Test
+tests =
+    describe "DnD.FileDrop"
+        [ initTests
+        , updateTests
+        , validateFileTests
+        , validateFilesTests
+        , acceptedMimeTypesTests
+        ]
+
+
+initTests : Test
+initTests =
+    describe "init"
+        [ test "hovering is False" <|
+            \() ->
+                isHovering init
+                    |> Expect.equal False
+        , test "no files" <|
+            \() ->
+                droppedFiles init
+                    |> Expect.equal []
+        ]
+
+
+updateTests : Test
+updateTests =
+    describe "update"
+        [ test "DragEnter sets hovering" <|
+            \() ->
+                update defaultConfig DragEnter init
+                    |> isHovering
+                    |> Expect.equal True
+        , test "DragLeave clears hovering" <|
+            \() ->
+                update defaultConfig DragEnter init
+                    |> update defaultConfig DragLeave
+                    |> isHovering
+                    |> Expect.equal False
+        , test "DragOverMsg keeps hovering True" <|
+            \() ->
+                update defaultConfig DragEnter init
+                    |> update defaultConfig DragOverMsg
+                    |> isHovering
+                    |> Expect.equal True
+        , test "FilesDropped stores valid files" <|
+            \() ->
+                let
+                    files =
+                        [ mkFile "photo.jpg" 500 "image/jpeg" ]
+
+                    state =
+                        update defaultConfig (FilesDropped files) init
+                in
+                droppedFiles state
+                    |> Expect.equal files
+        , test "FilesDropped clears hovering" <|
+            \() ->
+                let
+                    state =
+                        update defaultConfig DragEnter init
+                            |> update defaultConfig (FilesDropped [ mkFile "a.txt" 10 "text/plain" ])
+                in
+                isHovering state
+                    |> Expect.equal False
+        ]
+
+
+validateFileTests : Test
+validateFileTests =
+    describe "validateFile"
+        [ test "valid file returns no errors" <|
+            \() ->
+                validateFile imageConfig (mkFile "photo.png" 500 "image/png")
+                    |> Expect.equal []
+        , test "invalid MIME type returns error" <|
+            \() ->
+                let
+                    errors =
+                        validateFile imageConfig (mkFile "doc.pdf" 500 "application/pdf")
+                in
+                Expect.equal 1 (List.length errors)
+        , test "file too large returns error" <|
+            \() ->
+                let
+                    errors =
+                        validateFile imageConfig (mkFile "huge.png" 5000000 "image/png")
+                in
+                Expect.equal 1 (List.length errors)
+        , test "both MIME and size errors returned" <|
+            \() ->
+                let
+                    errors =
+                        validateFile imageConfig (mkFile "huge.pdf" 5000000 "application/pdf")
+                in
+                Expect.equal 2 (List.length errors)
+        , test "empty accept list accepts all MIME types" <|
+            \() ->
+                validateFile defaultConfig (mkFile "any.xyz" 100 "application/octet-stream")
+                    |> Expect.equal []
+        , test "no maxFileSize means no size check" <|
+            \() ->
+                validateFile defaultConfig (mkFile "huge.bin" 999999999 "application/octet-stream")
+                    |> Expect.equal []
+        ]
+
+
+validateFilesTests : Test
+validateFilesTests =
+    describe "validateFiles"
+        [ test "too many files returns TooManyFiles error" <|
+            \() ->
+                let
+                    files =
+                        [ mkFile "a.png" 100 "image/png"
+                        , mkFile "b.png" 100 "image/png"
+                        , mkFile "c.png" 100 "image/png"
+                        , mkFile "d.png" 100 "image/png"
+                        ]
+
+                    errors =
+                        validateFiles imageConfig files
+                in
+                Expect.equal True (List.length errors >= 1)
+        , test "within file count limit returns no count errors" <|
+            \() ->
+                let
+                    files =
+                        [ mkFile "a.png" 100 "image/png"
+                        , mkFile "b.png" 100 "image/png"
+                        ]
+
+                    errors =
+                        validateFiles imageConfig files
+                in
+                Expect.equal [] errors
+        ]
+
+
+acceptedMimeTypesTests : Test
+acceptedMimeTypesTests =
+    describe "acceptedMimeTypes"
+        [ test "joins MIME types with comma" <|
+            \() ->
+                acceptedMimeTypes { defaultConfig | accept = [ "image/*", "application/pdf" ] }
+                    |> Expect.equal "image/*,application/pdf"
+        , test "empty accept returns empty string" <|
+            \() ->
+                acceptedMimeTypes defaultConfig
+                    |> Expect.equal ""
+        ]

@@ -1,0 +1,376 @@
+module Test.DnD.Kanban exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD.Kanban exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.Kanban"
+        [ boardTests
+        , moveCardBetweenTests
+        , addCardTests
+        , removeCardTests
+        , findCardColumnTests
+        , canAddToColumnTests
+        , reorderColumnsTests
+        , emptyColumnTests
+        , columnCountTests
+        , totalCardsTests
+        , moveCardTests
+        , findCardTests
+        ]
+
+
+sampleBoard : Board String String
+sampleBoard =
+    board
+        [ { id = "todo"
+          , title = "To Do"
+          , cards = [ "task-1", "task-2", "task-3" ]
+          , wipLimit = Nothing
+          }
+        , { id = "doing"
+          , title = "Doing"
+          , cards = [ "task-4", "task-5" ]
+          , wipLimit = Just 3
+          }
+        , { id = "done"
+          , title = "Done"
+          , cards = [ "task-6" ]
+          , wipLimit = Nothing
+          }
+        ]
+
+
+boardTests : Test
+boardTests =
+    describe "board"
+        [ test "creates a board with correct number of columns" <|
+            \() ->
+                columnCount sampleBoard
+                    |> Expect.equal 3
+        , test "preserves column order" <|
+            \() ->
+                sampleBoard.columns
+                    |> List.map .id
+                    |> Expect.equal [ "todo", "doing", "done" ]
+        , test "preserves cards in columns" <|
+            \() ->
+                columnCards "todo" sampleBoard
+                    |> Expect.equal [ "task-1", "task-2", "task-3" ]
+        ]
+
+
+moveCardBetweenTests : Test
+moveCardBetweenTests =
+    describe "moveCardBetween"
+        [ test "moves card from one column to another" <|
+            \() ->
+                let
+                    result =
+                        moveCardBetween
+                            { card = "task-1"
+                            , fromColumn = "todo"
+                            , toColumn = "doing"
+                            , fromIndex = 0
+                            , toIndex = 0
+                            }
+                            sampleBoard
+                in
+                columnCards "doing" result
+                    |> List.head
+                    |> Expect.equal (Just "task-1")
+        , test "removes card from source column" <|
+            \() ->
+                let
+                    result =
+                        moveCardBetween
+                            { card = "task-1"
+                            , fromColumn = "todo"
+                            , toColumn = "doing"
+                            , fromIndex = 0
+                            , toIndex = 0
+                            }
+                            sampleBoard
+                in
+                columnCards "todo" result
+                    |> List.member "task-1"
+                    |> Expect.equal False
+        , test "inserts at correct index" <|
+            \() ->
+                let
+                    result =
+                        moveCardBetween
+                            { card = "task-1"
+                            , fromColumn = "todo"
+                            , toColumn = "doing"
+                            , fromIndex = 0
+                            , toIndex = 1
+                            }
+                            sampleBoard
+                in
+                columnCards "doing" result
+                    |> Expect.equal [ "task-4", "task-1", "task-5" ]
+        , test "nonexistent card leaves board unchanged" <|
+            \() ->
+                let
+                    result =
+                        moveCardBetween
+                            { card = "nonexistent"
+                            , fromColumn = "todo"
+                            , toColumn = "doing"
+                            , fromIndex = 0
+                            , toIndex = 0
+                            }
+                            sampleBoard
+                in
+                totalCards result
+                    |> Expect.equal 6
+        ]
+
+
+addCardTests : Test
+addCardTests =
+    describe "addCard"
+        [ test "adds card at specified index" <|
+            \() ->
+                let
+                    result =
+                        addCard "todo" 1 "new-task" sampleBoard
+                in
+                columnCards "todo" result
+                    |> Expect.equal [ "task-1", "new-task", "task-2", "task-3" ]
+        , test "adds card at beginning" <|
+            \() ->
+                let
+                    result =
+                        addCard "done" 0 "new-task" sampleBoard
+                in
+                columnCards "done" result
+                    |> Expect.equal [ "new-task", "task-6" ]
+        , test "adds card beyond end appends" <|
+            \() ->
+                let
+                    result =
+                        addCard "done" 99 "new-task" sampleBoard
+                in
+                columnCards "done" result
+                    |> Expect.equal [ "task-6", "new-task" ]
+        ]
+
+
+removeCardTests : Test
+removeCardTests =
+    describe "removeCard"
+        [ test "removes card from its column" <|
+            \() ->
+                let
+                    result =
+                        removeCard "task-1" sampleBoard
+                in
+                columnCards "todo" result
+                    |> Expect.equal [ "task-2", "task-3" ]
+        , test "total cards decreases by one" <|
+            \() ->
+                let
+                    result =
+                        removeCard "task-1" sampleBoard
+                in
+                totalCards result
+                    |> Expect.equal 5
+        , test "removing nonexistent card leaves board unchanged" <|
+            \() ->
+                let
+                    result =
+                        removeCard "nonexistent" sampleBoard
+                in
+                totalCards result
+                    |> Expect.equal 6
+        ]
+
+
+findCardColumnTests : Test
+findCardColumnTests =
+    describe "findCardColumn"
+        [ test "finds card in todo column" <|
+            \() ->
+                findCardColumn "task-1" sampleBoard
+                    |> Expect.equal (Just "todo")
+        , test "finds card in doing column" <|
+            \() ->
+                findCardColumn "task-4" sampleBoard
+                    |> Expect.equal (Just "doing")
+        , test "finds card in done column" <|
+            \() ->
+                findCardColumn "task-6" sampleBoard
+                    |> Expect.equal (Just "done")
+        , test "returns Nothing for nonexistent card" <|
+            \() ->
+                findCardColumn "nonexistent" sampleBoard
+                    |> Expect.equal Nothing
+        ]
+
+
+canAddToColumnTests : Test
+canAddToColumnTests =
+    describe "canAddToColumn"
+        [ test "allows adding to column without WIP limit" <|
+            \() ->
+                canAddToColumn defaultBoardConfig "todo" sampleBoard
+                    |> Expect.equal True
+        , test "allows adding to column below WIP limit" <|
+            \() ->
+                canAddToColumn defaultBoardConfig "doing" sampleBoard
+                    |> Expect.equal True
+        , test "rejects adding to column at WIP limit" <|
+            \() ->
+                let
+                    atLimitBoard =
+                        addCard "doing" 0 "extra-task" sampleBoard
+                in
+                canAddToColumn defaultBoardConfig "doing" atLimitBoard
+                    |> Expect.equal False
+        , test "allows adding when enforceWipLimits is False" <|
+            \() ->
+                let
+                    noEnforceConfig =
+                        { allowColumnReorder = True
+                        , enforceWipLimits = False
+                        }
+
+                    atLimitBoard =
+                        addCard "doing" 0 "extra-task" sampleBoard
+                in
+                canAddToColumn noEnforceConfig "doing" atLimitBoard
+                    |> Expect.equal True
+        ]
+
+
+reorderColumnsTests : Test
+reorderColumnsTests =
+    describe "reorderColumns"
+        [ test "moves column to another position" <|
+            \() ->
+                let
+                    result =
+                        reorderColumns "done" "todo" sampleBoard
+                in
+                result.columns
+                    |> List.map .id
+                    |> Expect.equal [ "done", "todo", "doing" ]
+        , test "moving column to itself is no-op" <|
+            \() ->
+                let
+                    result =
+                        reorderColumns "todo" "todo" sampleBoard
+                in
+                result.columns
+                    |> List.map .id
+                    |> Expect.equal [ "todo", "doing", "done" ]
+        ]
+
+
+emptyColumnTests : Test
+emptyColumnTests =
+    describe "emptyColumn"
+        [ test "creates column with no cards" <|
+            \() ->
+                let
+                    col =
+                        emptyColumn "backlog" "Backlog"
+                in
+                col.cards
+                    |> Expect.equal []
+        , test "creates column with correct id and title" <|
+            \() ->
+                let
+                    col =
+                        emptyColumn "backlog" "Backlog"
+                in
+                ( col.id, col.title )
+                    |> Expect.equal ( "backlog", "Backlog" )
+        , test "creates column with no WIP limit" <|
+            \() ->
+                let
+                    col =
+                        emptyColumn "backlog" "Backlog"
+                in
+                col.wipLimit
+                    |> Expect.equal Nothing
+        ]
+
+
+columnCountTests : Test
+columnCountTests =
+    describe "columnCount"
+        [ test "returns correct count" <|
+            \() ->
+                columnCount sampleBoard
+                    |> Expect.equal 3
+        , test "empty board has zero columns" <|
+            \() ->
+                columnCount (board [])
+                    |> Expect.equal 0
+        ]
+
+
+totalCardsTests : Test
+totalCardsTests =
+    describe "totalCards"
+        [ test "counts all cards across columns" <|
+            \() ->
+                totalCards sampleBoard
+                    |> Expect.equal 6
+        , test "empty board has zero cards" <|
+            \() ->
+                totalCards (board [])
+                    |> Expect.equal 0
+        , test "board with empty columns has zero cards" <|
+            \() ->
+                let
+                    emptyBoard =
+                        board
+                            [ emptyColumn "a" "A"
+                            , emptyColumn "b" "B"
+                            ]
+                in
+                totalCards emptyBoard
+                    |> Expect.equal 0
+        ]
+
+
+moveCardTests : Test
+moveCardTests =
+    describe "moveCard"
+        [ test "reorders card within same column" <|
+            \() ->
+                let
+                    result =
+                        moveCard "task-1" "task-3" "todo" sampleBoard
+                in
+                columnCards "todo" result
+                    |> Expect.equal [ "task-2", "task-3", "task-1" ]
+        ]
+
+
+findCardTests : Test
+findCardTests =
+    describe "findCard"
+        [ test "returns True for existing card" <|
+            \() ->
+                findCard "task-1" sampleBoard
+                    |> Expect.equal True
+        , test "returns False for nonexistent card" <|
+            \() ->
+                findCard "nonexistent" sampleBoard
+                    |> Expect.equal False
+        ]

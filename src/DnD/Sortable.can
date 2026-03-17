@@ -1,0 +1,299 @@
+module DnD.Sortable exposing
+    ( Layout(..)
+    , SortableItemState
+    , SortableConfig
+    , reorder
+    , moveBetween
+    , defaultItemState
+    , itemState
+    , insertAt
+    , removeItem
+    , moveItem
+    , findIndex
+    , defaultConfig
+    , previewReorder
+    )
+
+
+{-| High-level sortable list operations.
+
+Provides pure functions for reordering items in response to drag-and-drop
+events, as well as helpers for cross-container moves (e.g., kanban boards).
+
+The consider/finalize pattern allows live preview during drag: call
+`previewReorder` on each move to show the tentative order, and use
+`reorder` on drop to commit.
+
+@docs Layout, SortableItemState, defaultItemState, itemState
+
+@docs SortableConfig, defaultConfig
+
+@docs reorder, moveBetween, previewReorder, insertAt, removeItem, moveItem, findIndex
+
+-}
+
+
+import DnD exposing (DragEnd, DragOperation(..), State)
+
+
+{-| Layout direction for sortable containers.
+
+  - `Vertical`: Items are stacked vertically (most common).
+  - `Horizontal`: Items are arranged horizontally.
+  - `Mixed`: Items wrap in both directions (e.g., CSS flexbox with wrap).
+    Displacement is calculated on both axes based on item positions.
+-}
+type Layout
+    = Vertical
+    | Horizontal
+    | Mixed
+
+
+{-| Visual state of each item during a sort operation.
+
+Used by view functions to render items with appropriate styles:
+  - `isDragging`: This item is being dragged.
+  - `isOver`: A dragged item is hovering over this item.
+  - `transformX`: Horizontal offset in pixels (for displaced items).
+  - `transformY`: Vertical offset in pixels (for displaced items).
+-}
+type alias SortableItemState =
+    { isDragging : Bool
+    , isOver : Bool
+    , transformX : Float
+    , transformY : Float
+    }
+
+
+{-| Configuration for sortable behavior.
+
+  - `useKeyedNodes`: When True, uses `Html.Keyed` nodes for efficient
+    DOM updates during reorder. Prevents unnecessary DOM mutations.
+-}
+type alias SortableConfig =
+    { useKeyedNodes : Bool
+    }
+
+
+{-| Default sortable configuration with keyed nodes enabled. -}
+defaultConfig : SortableConfig
+defaultConfig =
+    { useKeyedNodes = True
+    }
+
+
+{-| Default item state with no visual effects.
+
+    defaultItemState ==
+        { isDragging = False, isOver = False, transformX = 0, transformY = 0 }
+-}
+defaultItemState : SortableItemState
+defaultItemState =
+    { isDragging = False
+    , isOver = False
+    , transformX = 0.0
+    , transformY = 0.0
+    }
+
+
+{-| Compute the visual state of an item given the current drag state.
+
+    itemState state "item-3"
+-}
+itemState : State id -> id -> SortableItemState
+itemState state itemId =
+    case state.operation of
+        NotDragging ->
+            defaultItemState
+
+        Dragging drag ->
+            { isDragging = drag.item.id == itemId
+            , isOver =
+                Maybe.withDefault False
+                    (Maybe.map (\t -> t.id == itemId) drag.over)
+            , transformX = 0.0
+            , transformY = 0.0
+            }
+
+
+{-| Reorder a list after a drag end event.
+
+Moves the active item to the position of the drop target. If the drop
+target is not in the list, the list is returned unchanged.
+
+    reorder { active = { id = "b", rect = r }, over = Just { id = "d", rect = r2 } }
+        [ "a", "b", "c", "d", "e" ]
+    -- [ "a", "c", "d", "b", "e" ]
+-}
+reorder : DragEnd id -> List id -> List id
+reorder dragEnd items =
+    case dragEnd.over of
+        Nothing ->
+            items
+
+        Just target ->
+            moveItem dragEnd.active.id target.id items
+
+
+{-| Preview a reorder during an active drag (consider pattern).
+
+Given the active drag item id and the hovered target id, returns the
+tentative order. Use this on `DragOverTarget` events to show a live
+preview of where the item would land.
+
+    previewReorder "dragged-item" "hovered-target" currentList
+    -- Returns list with dragged-item moved to hovered-target position
+-}
+previewReorder : id -> id -> List id -> List id
+previewReorder activeId overId items =
+    moveItem activeId overId items
+
+
+{-| Move an item between two containers.
+
+Given source and destination lists, the active item id, and the target
+item id, moves the active item from the source list to the position of
+the target item in the destination list.
+
+    moveBetween
+        { from = [ "a", "b", "c" ]
+        , to = [ "x", "y" ]
+        , active = "b"
+        , over = "y"
+        }
+    -- { from = [ "a", "c" ], to = [ "x", "b", "y" ] }
+-}
+moveBetween :
+    { from : List id
+    , to : List id
+    , active : id
+    , over : id
+    }
+    -> { from : List id, to : List id }
+moveBetween config =
+    let
+        newFrom =
+            removeItem config.active config.from
+
+        overIndex =
+            findIndex config.over config.to
+                |> Maybe.withDefault (List.length config.to)
+
+        newTo =
+            insertAt overIndex config.active config.to
+    in
+    { from = newFrom
+    , to = newTo
+    }
+
+
+{-| Insert an item at the given index in a list.
+
+If the index is out of bounds, the item is appended to the end.
+
+    insertAt 1 "x" [ "a", "b", "c" ]
+    -- [ "a", "x", "b", "c" ]
+-}
+insertAt : Int -> a -> List a -> List a
+insertAt index item list =
+    if index <= 0 then
+        item :: list
+
+    else
+        case list of
+            [] ->
+                [ item ]
+
+            first :: rest ->
+                first :: insertAt (index - 1) item rest
+
+
+{-| Remove the first occurrence of an item from a list.
+
+    removeItem "b" [ "a", "b", "c", "b" ]
+    -- [ "a", "c", "b" ]
+-}
+removeItem : id -> List id -> List id
+removeItem target list =
+    removeItemHelp target list []
+
+
+removeItemHelp : id -> List id -> List id -> List id
+removeItemHelp target remaining acc =
+    case remaining of
+        [] ->
+            List.reverse acc
+
+        first :: rest ->
+            if first == target then
+                List.reverse acc ++ rest
+
+            else
+                removeItemHelp target rest (first :: acc)
+
+
+{-| Move an item to the position of another item in the same list.
+
+The source item is removed and inserted at the target's position.
+
+    moveItem "b" "d" [ "a", "b", "c", "d", "e" ]
+    -- [ "a", "c", "d", "b", "e" ]
+-}
+moveItem : id -> id -> List id -> List id
+moveItem sourceId targetId items =
+    if sourceId == targetId then
+        items
+
+    else
+    let
+        withoutSource =
+            removeItem sourceId items
+
+        targetIndex =
+            findIndex targetId withoutSource
+                |> Maybe.withDefault (List.length withoutSource)
+
+        insertIdx =
+            let
+                sourceIdx =
+                    findIndex sourceId items
+                        |> Maybe.withDefault 0
+
+                targetIdx =
+                    findIndex targetId items
+                        |> Maybe.withDefault 0
+            in
+            if sourceIdx < targetIdx then
+                targetIndex + 1
+
+            else
+                targetIndex
+    in
+    insertAt insertIdx sourceId withoutSource
+
+
+{-| Find the index of the first occurrence of an item in a list.
+
+    findIndex "c" [ "a", "b", "c", "d" ]
+    -- Just 2
+
+    findIndex "z" [ "a", "b", "c" ]
+    -- Nothing
+-}
+findIndex : id -> List id -> Maybe Int
+findIndex target list =
+    findIndexHelp target 0 list
+
+
+findIndexHelp : id -> Int -> List id -> Maybe Int
+findIndexHelp target index list =
+    case list of
+        [] ->
+            Nothing
+
+        first :: rest ->
+            if first == target then
+                Just index
+
+            else
+                findIndexHelp target (index + 1) rest

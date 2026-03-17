@@ -1,0 +1,176 @@
+module Test.DnD.Modifier exposing (main, tests)
+
+import Basics exposing (..)
+import DnD.Modifier exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+sampleRect : { x : Float, y : Float, width : Float, height : Float }
+sampleRect =
+    { x = 100, y = 100, width = 50, height = 50 }
+
+
+tests : Test
+tests =
+    describe "DnD.Modifier"
+        [ horizontalAxisTests
+        , verticalAxisTests
+        , boundsTests
+        , snapGridTests
+        , applyModifiersTests
+        ]
+
+
+horizontalAxisTests : Test
+horizontalAxisTests =
+    describe "restrictToHorizontalAxis"
+        [ test "zeroes out vertical movement" <|
+            \() ->
+                applyModifier restrictToHorizontalAxis sampleRect { x = 30, y = 45 }
+                    |> Expect.equal { x = 30, y = 0 }
+        , test "preserves zero delta" <|
+            \() ->
+                applyModifier restrictToHorizontalAxis sampleRect { x = 0, y = 0 }
+                    |> Expect.equal { x = 0, y = 0 }
+        , test "preserves negative horizontal" <|
+            \() ->
+                applyModifier restrictToHorizontalAxis sampleRect { x = -15, y = 20 }
+                    |> Expect.equal { x = -15, y = 0 }
+        ]
+
+
+verticalAxisTests : Test
+verticalAxisTests =
+    describe "restrictToVerticalAxis"
+        [ test "zeroes out horizontal movement" <|
+            \() ->
+                applyModifier restrictToVerticalAxis sampleRect { x = 30, y = 45 }
+                    |> Expect.equal { x = 0, y = 45 }
+        , test "preserves zero delta" <|
+            \() ->
+                applyModifier restrictToVerticalAxis sampleRect { x = 0, y = 0 }
+                    |> Expect.equal { x = 0, y = 0 }
+        , test "preserves negative vertical" <|
+            \() ->
+                applyModifier restrictToVerticalAxis sampleRect { x = 20, y = -15 }
+                    |> Expect.equal { x = 0, y = -15 }
+        ]
+
+
+boundsTests : Test
+boundsTests =
+    describe "restrictToBounds"
+        [ test "allows movement within bounds" <|
+            \() ->
+                let
+                    bounds =
+                        { x = 0, y = 0, width = 500, height = 500 }
+
+                    modifier =
+                        restrictToBounds bounds
+                in
+                applyModifier modifier sampleRect { x = 50, y = 50 }
+                    |> Expect.equal { x = 50, y = 50 }
+        , test "clamps to right boundary" <|
+            \() ->
+                let
+                    bounds =
+                        { x = 0, y = 0, width = 200, height = 500 }
+
+                    modifier =
+                        restrictToBounds bounds
+                in
+                applyModifier modifier sampleRect { x = 200, y = 0 }
+                    |> .x
+                    |> Expect.within (Expect.Absolute 0.001) 50.0
+        , test "clamps to left boundary" <|
+            \() ->
+                let
+                    bounds =
+                        { x = 0, y = 0, width = 500, height = 500 }
+
+                    modifier =
+                        restrictToBounds bounds
+                in
+                applyModifier modifier sampleRect { x = -200, y = 0 }
+                    |> .x
+                    |> Expect.within (Expect.Absolute 0.001) -100.0
+        , test "clamps to bottom boundary" <|
+            \() ->
+                let
+                    bounds =
+                        { x = 0, y = 0, width = 500, height = 200 }
+
+                    modifier =
+                        restrictToBounds bounds
+                in
+                applyModifier modifier sampleRect { x = 0, y = 200 }
+                    |> .y
+                    |> Expect.within (Expect.Absolute 0.001) 50.0
+        , test "clamps to top boundary" <|
+            \() ->
+                let
+                    bounds =
+                        { x = 0, y = 0, width = 500, height = 500 }
+
+                    modifier =
+                        restrictToBounds bounds
+                in
+                applyModifier modifier sampleRect { x = 0, y = -200 }
+                    |> .y
+                    |> Expect.within (Expect.Absolute 0.001) -100.0
+        ]
+
+
+snapGridTests : Test
+snapGridTests =
+    describe "snapToGrid"
+        [ test "snaps to nearest grid point" <|
+            \() ->
+                applyModifier (snapToGrid 10 10) sampleRect { x = 13, y = 17 }
+                    |> Expect.equal { x = 10, y = 20 }
+        , test "exact grid point unchanged" <|
+            \() ->
+                applyModifier (snapToGrid 10 10) sampleRect { x = 20, y = 30 }
+                    |> Expect.equal { x = 20, y = 30 }
+        , test "snaps negative values" <|
+            \() ->
+                applyModifier (snapToGrid 10 10) sampleRect { x = -13, y = -17 }
+                    |> Expect.equal { x = -10, y = -20 }
+        , test "zero grid size returns unchanged" <|
+            \() ->
+                applyModifier (snapToGrid 0 0) sampleRect { x = 13, y = 17 }
+                    |> Expect.equal { x = 13, y = 17 }
+        , test "different x and y grid sizes" <|
+            \() ->
+                applyModifier (snapToGrid 20 5) sampleRect { x = 13, y = 17 }
+                    |> Expect.equal { x = 20, y = 15 }
+        , test "zero delta stays zero" <|
+            \() ->
+                applyModifier (snapToGrid 10 10) sampleRect { x = 0, y = 0 }
+                    |> Expect.equal { x = 0, y = 0 }
+        ]
+
+
+applyModifiersTests : Test
+applyModifiersTests =
+    describe "applyModifiers"
+        [ test "empty modifier list returns delta unchanged" <|
+            \() ->
+                applyModifiers [] sampleRect { x = 15, y = 25 }
+                    |> Expect.equal { x = 15, y = 25 }
+        , test "single modifier applied" <|
+            \() ->
+                applyModifiers [ restrictToHorizontalAxis ] sampleRect { x = 15, y = 25 }
+                    |> Expect.equal { x = 15, y = 0 }
+        , test "multiple modifiers compose in order" <|
+            \() ->
+                applyModifiers [ restrictToHorizontalAxis, snapToGrid 10 10 ] sampleRect { x = 13, y = 25 }
+                    |> Expect.equal { x = 10, y = 0 }
+        ]

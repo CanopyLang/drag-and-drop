@@ -1,0 +1,493 @@
+module DnD.Snap exposing
+    ( SnapConfig
+    , SnapTarget(..)
+    , SnapResult
+    , GuideLine
+    , Orientation(..)
+    , defaultConfig
+    , detectSnap
+    , adjustDelta
+    , viewGuides
+    , snapPoints
+    )
+
+
+{-| Figma-style alignment guides during drag operations.
+
+This module detects when a dragged element's edges or center align with
+other elements, grid lines, or explicit coordinates, and snaps the
+dragged element into alignment. Visual guide lines are rendered to show
+the user which edges are aligned, replicating the alignment-guide
+experience found in design tools like Figma and Sketch.
+
+No other drag-and-drop library provides this feature out of the box.
+
+# Configuration
+@docs SnapConfig, SnapTarget, defaultConfig
+
+# Detection
+@docs detectSnap, adjustDelta, snapPoints
+
+# Rendering
+@docs viewGuides, SnapResult, GuideLine, Orientation
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import DnD exposing (Delta, Rect, Point)
+import Html exposing (Html, div)
+import Html.Attributes exposing (style)
+
+
+
+-- TYPES
+
+
+{-| Configuration for snap detection. Controls which targets to snap
+against, the pixel threshold for triggering a snap, and whether visual
+guide lines should be rendered.
+-}
+type alias SnapConfig id =
+    { targets : List (SnapTarget id)
+    , threshold : Float
+    , showGuides : Bool
+    }
+
+
+{-| A target that the dragged element can snap to.
+
+  - `SnapToElement` -- snap to another element's edges and center.
+    The `id` lets callers identify which element was snapped to.
+  - `SnapToGrid` -- snap to a repeating grid with the given cell
+    width (`x`) and height (`y`).
+  - `SnapToCoordinates` -- snap to explicit lists of x and y
+    coordinate values.
+
+-}
+type SnapTarget id
+    = SnapToElement id Rect
+    | SnapToGrid { x : Float, y : Float }
+    | SnapToCoordinates (List Float) (List Float)
+
+
+{-| The result of snap detection. Contains the adjusted delta that
+aligns the dragged element with the nearest snap target, the list of
+guide lines to render, and flags indicating whether snapping occurred
+on each axis.
+-}
+type alias SnapResult =
+    { adjustedDelta : Delta
+    , guides : List GuideLine
+    , snappedX : Bool
+    , snappedY : Bool
+    }
+
+
+{-| A single alignment guide line to render as a visual indicator.
+The orientation determines whether it is a vertical or horizontal line.
+For a `Vertical` guide, `position` is the x coordinate and `start`/`end_`
+are the y range. For a `Horizontal` guide, `position` is the y coordinate
+and `start`/`end_` are the x range.
+-}
+type alias GuideLine =
+    { orientation : Orientation
+    , position : Float
+    , start : Float
+    , end_ : Float
+    }
+
+
+{-| Orientation of a guide line. -}
+type Orientation
+    = Horizontal
+    | Vertical
+
+
+
+-- DEFAULTS
+
+
+{-| A default snap configuration with no targets, a 5-pixel threshold,
+and guide rendering enabled. Add targets to start snapping:
+
+    { defaultConfig | targets = [ SnapToGrid { x = 20, y = 20 } ] }
+
+-}
+defaultConfig : SnapConfig id
+defaultConfig =
+    { targets = []
+    , threshold = 5.0
+    , showGuides = True
+    }
+
+
+
+-- SNAP POINTS
+
+
+{-| Compute the six snap points of a rectangle: left edge, horizontal
+center, and right edge on the x axis; top edge, vertical center, and
+bottom edge on the y axis.
+
+    snapPoints { x = 10, y = 20, width = 100, height = 50 }
+    --> { xs = [ 10, 60, 110 ], ys = [ 20, 45, 70 ] }
+
+-}
+snapPoints : Rect -> { xs : List Float, ys : List Float }
+snapPoints rect =
+    { xs = [ rect.x, rect.x + rect.width / 2, rect.x + rect.width ]
+    , ys = [ rect.y, rect.y + rect.height / 2, rect.y + rect.height ]
+    }
+
+
+
+-- DETECTION
+
+
+{-| Detect snap alignment between the dragged element and all configured
+targets. The dragged element's rect is offset by the proposed delta, then
+its snap points are compared against each target's snap points. The
+closest match within the threshold on each axis wins, and the delta is
+adjusted to align precisely.
+
+Returns a `SnapResult` with the corrected delta, guide lines for
+rendering, and flags indicating whether snapping occurred.
+
+-}
+detectSnap : SnapConfig id -> Rect -> Delta -> SnapResult
+detectSnap config rect delta =
+    let
+        movedRect =
+            { x = rect.x + delta.x
+            , y = rect.y + delta.y
+            , width = rect.width
+            , height = rect.height
+            }
+
+        draggedPoints =
+            snapPoints movedRect
+
+        allCandidates =
+            List.concatMap (targetCandidates draggedPoints) config.targets
+
+        bestX =
+            findBestSnap config.threshold (List.filterMap candidateToX allCandidates)
+
+        bestY =
+            findBestSnap config.threshold (List.filterMap candidateToY allCandidates)
+
+        adjustedDelta =
+            { x = delta.x + snapOffset bestX
+            , y = delta.y + snapOffset bestY
+            }
+
+        adjustedRect =
+            { x = rect.x + adjustedDelta.x
+            , y = rect.y + adjustedDelta.y
+            , width = rect.width
+            , height = rect.height
+            }
+
+        guides =
+            buildGuides adjustedRect bestX bestY
+
+        isSnapped maybeCandidate =
+            case maybeCandidate of
+                Just _ ->
+                    True
+
+                Nothing ->
+                    False
+    in
+    { adjustedDelta = adjustedDelta
+    , guides = guides
+    , snappedX = isSnapped bestX
+    , snappedY = isSnapped bestY
+    }
+
+
+{-| Convenience wrapper that returns only the adjusted delta, discarding
+guide lines and snap flags. Useful when you only need the corrected
+movement without rendering guides.
+-}
+adjustDelta : SnapConfig id -> Rect -> Delta -> Delta
+adjustDelta config rect delta =
+    (detectSnap config rect delta).adjustedDelta
+
+
+
+-- INTERNAL: Candidate generation
+
+
+{-| A snap candidate holds the axis, the offset needed to align, the
+absolute distance, and the target coordinate for guide line generation.
+-}
+type alias SnapCandidate =
+    { axis : Axis
+    , offset : Float
+    , distance : Float
+    , targetCoord : Float
+    }
+
+
+{-| Internal axis discriminator. -}
+type Axis
+    = XAxis
+    | YAxis
+
+
+{-| Extract x-axis candidates. -}
+candidateToX : SnapCandidate -> Maybe SnapCandidate
+candidateToX candidate =
+    if candidate.axis == XAxis then
+        Just candidate
+    else
+        Nothing
+
+
+{-| Extract y-axis candidates. -}
+candidateToY : SnapCandidate -> Maybe SnapCandidate
+candidateToY candidate =
+    if candidate.axis == YAxis then
+        Just candidate
+    else
+        Nothing
+
+
+{-| Generate snap candidates for a single target. -}
+targetCandidates : { xs : List Float, ys : List Float } -> SnapTarget id -> List SnapCandidate
+targetCandidates draggedPoints target =
+    targetCandidatesHelp draggedPoints target
+
+
+{-| Dispatch to the appropriate candidate generator based on target type. -}
+targetCandidatesHelp : { xs : List Float, ys : List Float } -> SnapTarget id -> List SnapCandidate
+targetCandidatesHelp draggedPoints target =
+    case target of
+        SnapToElement _ rect ->
+            elementCandidates draggedPoints rect
+
+        SnapToGrid cell ->
+            gridCandidates draggedPoints cell
+
+        SnapToCoordinates xs ys ->
+            coordinateCandidates draggedPoints xs ys
+
+
+{-| Generate candidates by comparing dragged snap points against an
+element's snap points on both axes. -}
+elementCandidates : { xs : List Float, ys : List Float } -> Rect -> List SnapCandidate
+elementCandidates draggedPoints rect =
+    let
+        targetPts =
+            snapPoints rect
+    in
+    axisCandidates XAxis draggedPoints.xs targetPts.xs
+        ++ axisCandidates YAxis draggedPoints.ys targetPts.ys
+
+
+{-| Generate candidates for a repeating grid. Each dragged snap point
+snaps to the nearest grid line on its axis. -}
+gridCandidates : { xs : List Float, ys : List Float } -> { x : Float, y : Float } -> List SnapCandidate
+gridCandidates draggedPoints cell =
+    List.map (gridCandidateForAxis XAxis cell.x) draggedPoints.xs
+        ++ List.map (gridCandidateForAxis YAxis cell.y) draggedPoints.ys
+
+
+{-| Compute the snap candidate for a single dragged point against a grid axis. -}
+gridCandidateForAxis : Axis -> Float -> Float -> SnapCandidate
+gridCandidateForAxis axis cellSize draggedCoord =
+    let
+        nearestLine =
+            toFloat (round (draggedCoord / cellSize)) * cellSize
+
+        off =
+            nearestLine - draggedCoord
+    in
+    { axis = axis
+    , offset = off
+    , distance = abs off
+    , targetCoord = nearestLine
+    }
+
+
+{-| Generate candidates for explicit coordinate lists. -}
+coordinateCandidates : { xs : List Float, ys : List Float } -> List Float -> List Float -> List SnapCandidate
+coordinateCandidates draggedPoints targetXs targetYs =
+    axisCandidates XAxis draggedPoints.xs targetXs
+        ++ axisCandidates YAxis draggedPoints.ys targetYs
+
+
+{-| Compare every dragged point against every target point on a single
+axis, producing one candidate per pair. -}
+axisCandidates : Axis -> List Float -> List Float -> List SnapCandidate
+axisCandidates axis draggedCoords targetCoords =
+    List.concatMap (\dc -> List.map (pairCandidate axis dc) targetCoords) draggedCoords
+
+
+{-| Build a candidate from a dragged coordinate and a target coordinate. -}
+pairCandidate : Axis -> Float -> Float -> SnapCandidate
+pairCandidate axis draggedCoord targetCoord =
+    let
+        off =
+            targetCoord - draggedCoord
+    in
+    { axis = axis
+    , offset = off
+    , distance = abs off
+    , targetCoord = targetCoord
+    }
+
+
+
+-- INTERNAL: Best match selection
+
+
+{-| Find the candidate with the smallest distance that is within the
+threshold. Returns `Nothing` if no candidate qualifies. -}
+findBestSnap : Float -> List SnapCandidate -> Maybe SnapCandidate
+findBestSnap threshold candidates =
+    let
+        withinThreshold =
+            List.filter (\c -> c.distance <= threshold) candidates
+    in
+    List.foldl closerCandidate Nothing withinThreshold
+
+
+{-| Keep the candidate with the smaller distance. -}
+closerCandidate : SnapCandidate -> Maybe SnapCandidate -> Maybe SnapCandidate
+closerCandidate candidate best =
+    case best of
+        Nothing ->
+            Just candidate
+
+        Just current ->
+            if candidate.distance < current.distance then
+                Just candidate
+            else
+                Just current
+
+
+{-| Extract the offset from an optional snap candidate, defaulting to zero. -}
+snapOffset : Maybe SnapCandidate -> Float
+snapOffset maybeCandidate =
+    Maybe.withDefault 0 (Maybe.map .offset maybeCandidate)
+
+
+
+-- INTERNAL: Guide line generation
+
+
+{-| Build guide lines from the best x and y snap candidates. Guide lines
+extend across the full dragged rect so the user can see which edge or
+center line is aligned. -}
+buildGuides : Rect -> Maybe SnapCandidate -> Maybe SnapCandidate -> List GuideLine
+buildGuides rect bestX bestY =
+    buildXGuide rect bestX ++ buildYGuide rect bestY
+
+
+{-| Build a vertical guide line for an x-axis snap. -}
+buildXGuide : Rect -> Maybe SnapCandidate -> List GuideLine
+buildXGuide rect maybeBest =
+    case maybeBest of
+        Nothing ->
+            []
+
+        Just best ->
+            [ { orientation = Vertical
+              , position = best.targetCoord
+              , start = rect.y - 20
+              , end_ = rect.y + rect.height + 20
+              }
+            ]
+
+
+{-| Build a horizontal guide line for a y-axis snap. -}
+buildYGuide : Rect -> Maybe SnapCandidate -> List GuideLine
+buildYGuide rect maybeBest =
+    case maybeBest of
+        Nothing ->
+            []
+
+        Just best ->
+            [ { orientation = Horizontal
+              , position = best.targetCoord
+              , start = rect.x - 20
+              , end_ = rect.x + rect.width + 20
+              }
+            ]
+
+
+
+-- VIEW
+
+
+{-| Render guide lines as absolutely-positioned 1px dashed blue lines.
+
+Each guide line is rendered as a `div` with inline styles. Vertical
+guides are tall thin lines; horizontal guides are wide thin lines.
+The guide color is `#4a90d9` (a soft blue that is visible against
+most backgrounds without being garish).
+
+Place this in your view alongside the drag overlay:
+
+    if model.snapConfig.showGuides then
+        viewGuides snapResult.guides
+    else
+        Html.nothing
+
+-}
+viewGuides : List GuideLine -> Html msg
+viewGuides guides =
+    div [] (List.map viewSingleGuide guides)
+
+
+{-| Render a single guide line as an absolutely-positioned div. -}
+viewSingleGuide : GuideLine -> Html msg
+viewSingleGuide guide =
+    case guide.orientation of
+        Vertical ->
+            viewVerticalGuide guide
+
+        Horizontal ->
+            viewHorizontalGuide guide
+
+
+{-| Render a vertical guide line (fixed x, spanning a y range). -}
+viewVerticalGuide : GuideLine -> Html msg
+viewVerticalGuide guide =
+    div
+        [ style "position" "fixed"
+        , style "left" (floatToPx guide.position)
+        , style "top" (floatToPx guide.start)
+        , style "width" "1px"
+        , style "height" (floatToPx (guide.end_ - guide.start))
+        , style "border-left" "1px dashed #4a90d9"
+        , style "pointer-events" "none"
+        , style "z-index" "9999"
+        ]
+        []
+
+
+{-| Render a horizontal guide line (fixed y, spanning an x range). -}
+viewHorizontalGuide : GuideLine -> Html msg
+viewHorizontalGuide guide =
+    div
+        [ style "position" "fixed"
+        , style "left" (floatToPx guide.start)
+        , style "top" (floatToPx guide.position)
+        , style "width" (floatToPx (guide.end_ - guide.start))
+        , style "height" "1px"
+        , style "border-top" "1px dashed #4a90d9"
+        , style "pointer-events" "none"
+        , style "z-index" "9999"
+        ]
+        []
+
+
+{-| Convert a float to a pixel string for inline styles. -}
+floatToPx : Float -> String
+floatToPx n =
+    String.fromFloat n ++ "px"

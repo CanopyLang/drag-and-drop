@@ -1,0 +1,242 @@
+module DnD.Events exposing
+    ( onPointerDown
+    , onPointerMove
+    , onPointerUp
+    , onKeyboardDrag
+    , onTouchStart
+    , preventDefaultOnDrag
+    , pointerDecoder
+    , modifierKeysDecoder
+    )
+
+
+{-| Pointer, touch, and keyboard event attribute generators for DnD.
+
+Eliminates the 100+ lines of event decoder boilerplate that every app
+using this library would otherwise need to write. Each function produces
+`Html.Attribute msg` values that decode browser events into `DnD.Msg`
+messages, which callers then wrap in their own `msg` type via a
+provided mapping function.
+
+# Pointer Events
+@docs onPointerDown, onPointerMove, onPointerUp
+
+# Touch Events
+@docs onTouchStart
+
+# Keyboard Events
+@docs onKeyboardDrag
+
+# Utilities
+@docs preventDefaultOnDrag, pointerDecoder, modifierKeysDecoder
+
+-}
+
+
+import DnD exposing (Msg(..), DragItem, Point, Delta)
+import Html exposing (Attribute)
+import Html.Attributes
+import Html.Events as Events
+import Json.Decode as D exposing (Decoder)
+
+
+{-| Attach a pointerdown handler that initiates a drag operation.
+
+The first argument wraps the internal `DnD.Msg` into the caller's
+message type. The second argument constructs a `DragItem` from
+the item's identifier. The third argument is the id of the item
+being made draggable.
+
+    div
+        (onPointerDown DndMsg toItem "card-1" :: otherAttrs)
+        [ text "Drag me" ]
+-}
+onPointerDown : (Msg id -> msg) -> (id -> DragItem id) -> id -> Attribute msg
+onPointerDown toMsg toDragItem itemId =
+    Events.on "pointerdown"
+        (pointerDecoder
+            |> D.map
+                (\point ->
+                    toMsg (StartDrag (toDragItem itemId) point)
+                )
+        )
+
+
+{-| Attach a pointermove handler that updates the drag position.
+
+Typically applied to the drag overlay or a container element rather
+than individual items, since the pointer may move outside the
+original element during a drag.
+
+    div
+        (onPointerMove DndMsg :: otherAttrs)
+        [ viewContent ]
+-}
+onPointerMove : (Msg id -> msg) -> Attribute msg
+onPointerMove toMsg =
+    Events.on "pointermove"
+        (pointerDecoder
+            |> D.map (\point -> toMsg (MoveDrag point))
+        )
+
+
+{-| Attach a pointerup handler that ends the drag operation.
+
+    div
+        (onPointerUp DndMsg :: otherAttrs)
+        [ viewContent ]
+-}
+onPointerUp : (Msg id -> msg) -> Attribute msg
+onPointerUp toMsg =
+    Events.on "pointerup"
+        (D.succeed (toMsg EndDrag))
+
+
+{-| Attach keyboard event handlers for accessible drag-and-drop.
+
+Listens for arrow keys (to move the dragged item), Enter/Space (to
+pick up or drop), and Escape (to cancel). The keyboard move step
+is 10 pixels per arrow key press.
+
+    div
+        (onKeyboardDrag DndMsg :: otherAttrs)
+        [ viewContent ]
+-}
+onKeyboardDrag : (Msg id -> msg) -> Attribute msg
+onKeyboardDrag toMsg =
+    Events.on "keydown"
+        (keyboardDragDecoder
+            |> D.andThen
+                (\maybeMsg ->
+                    case maybeMsg of
+                        Just dndMsg ->
+                            D.succeed (toMsg dndMsg)
+
+                        Nothing ->
+                            D.fail "not a drag key"
+                )
+        )
+
+
+{-| Attach a touchstart handler that initiates a drag operation.
+
+Touch events use the first touch point's coordinates. Like
+`onPointerDown`, the second argument constructs a `DragItem` and the
+third is the item id.
+
+    div
+        (onTouchStart DndMsg toItem "card-1" :: otherAttrs)
+        [ text "Touch drag" ]
+-}
+onTouchStart : (Msg id -> msg) -> (id -> DragItem id) -> id -> Attribute msg
+onTouchStart toMsg toDragItem itemId =
+    Events.on "touchstart"
+        (touchDecoder
+            |> D.map
+                (\point ->
+                    toMsg (StartDrag (toDragItem itemId) point)
+                )
+        )
+
+
+{-| Prevent the default browser drag behavior on an element.
+
+Apply this to elements that should only use the pointer-event-based
+DnD system, not the native HTML drag-and-drop. Prevents ghost images
+and interfering browser behavior.
+
+    div
+        (preventDefaultOnDrag :: otherAttrs)
+        [ text "No native drag" ]
+-}
+preventDefaultOnDrag : Attribute msg
+preventDefaultOnDrag =
+    Html.Attributes.attribute "draggable" "false"
+
+
+{-| Decoder that extracts a `Point` from pointer events.
+
+Reads `clientX` and `clientY` from the event object, providing the
+pointer position in viewport coordinates.
+
+    Events.on "pointermove" (pointerDecoder |> D.map MyMsg)
+-}
+pointerDecoder : Decoder Point
+pointerDecoder =
+    D.map2 Point
+        (D.field "clientX" D.float)
+        (D.field "clientY" D.float)
+
+
+{-| Decoder that extracts modifier key state from keyboard/pointer events.
+
+Reads `ctrlKey`, `altKey`, and `metaKey` flags from the event object.
+Useful for implementing copy (ctrl+drag), link (alt+drag), and other
+modifier-dependent drag behaviors.
+-}
+modifierKeysDecoder : Decoder { ctrlKey : Bool, altKey : Bool, metaKey : Bool }
+modifierKeysDecoder =
+    D.map3 (\c a m -> { ctrlKey = c, altKey = a, metaKey = m })
+        (D.field "ctrlKey" D.bool)
+        (D.field "altKey" D.bool)
+        (D.field "metaKey" D.bool)
+
+
+
+-- INTERNAL HELPERS
+
+
+{-| Decode a keyboard event into a DnD message, if the key is relevant.
+
+Arrow keys produce KeyboardMove deltas, Escape produces CancelDrag,
+and Enter/Space produce EndDrag (to drop the item).
+-}
+keyboardDragDecoder : Decoder (Maybe (Msg id))
+keyboardDragDecoder =
+    D.field "key" D.string
+        |> D.map keyToMsg
+
+
+{-| Map a key string to an optional DnD message. -}
+keyToMsg : String -> Maybe (Msg id)
+keyToMsg key =
+    let
+        step =
+            10.0
+    in
+    case key of
+        "ArrowUp" ->
+            Just (KeyboardMove { x = 0, y = -step })
+
+        "ArrowDown" ->
+            Just (KeyboardMove { x = 0, y = step })
+
+        "ArrowLeft" ->
+            Just (KeyboardMove { x = -step, y = 0 })
+
+        "ArrowRight" ->
+            Just (KeyboardMove { x = step, y = 0 })
+
+        "Escape" ->
+            Just CancelDrag
+
+        "Enter" ->
+            Just EndDrag
+
+        " " ->
+            Just EndDrag
+
+        _ ->
+            Nothing
+
+
+{-| Decode a touch event, extracting the first touch point as a Point. -}
+touchDecoder : Decoder Point
+touchDecoder =
+    D.at [ "touches", "0" ]
+        (D.map2 Point
+            (D.field "clientX" D.float)
+            (D.field "clientY" D.float)
+        )
+
+

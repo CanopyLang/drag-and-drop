@@ -1,0 +1,416 @@
+module DnD.Grid.View exposing
+    ( GridViewConfig
+    , viewGrid
+    , viewGridItem
+    , viewGridPlaceholder
+    , viewGridLines
+    , pixelStyles
+    )
+
+
+{-| Grid layout view rendering for the drag-and-drop grid system.
+
+Renders a dashboard-style grid with absolutely positioned items, optional
+grid lines, and a placeholder indicator for drop targets. Each item is
+positioned using pixel coordinates derived from the `GridConfig`, and
+items being dragged receive their delta offset from the DnD state.
+
+The grid container uses `position: relative` so that all child items can
+be positioned absolutely within it. Grid lines are rendered as thin
+semi-transparent lines behind the items to help visualize the grid
+structure during layout editing.
+
+# Configuration
+@docs GridViewConfig
+
+# Grid View
+@docs viewGrid
+
+# Item View
+@docs viewGridItem
+
+# Placeholder
+@docs viewGridPlaceholder
+
+# Grid Lines
+@docs viewGridLines
+
+# Pixel Conversion
+@docs pixelStyles
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import DnD exposing (State, DragOperation(..), Msg, Rect)
+import DnD.Grid exposing (Grid, GridItem, GridConfig, GridPosition, itemPosition, gridWidth)
+import Html exposing (Html, Attribute, div, text)
+import Html.Attributes exposing (style, attribute)
+
+
+{-| Configuration for rendering a grid.
+
+  - `toMsg`: Wraps internal `DnD.Msg` values into the application's message
+      type. Used for wiring drag events from grid items to the DnD system.
+  - `config`: The grid configuration controlling column count, row height,
+      gap size, and container width. Used to convert grid positions to pixel
+      coordinates.
+  - `renderItem`: A function that renders the content of a grid item given
+      its id and current grid position. The returned Html is placed inside
+      the positioned grid item wrapper.
+  - `showGridLines`: When True, renders semi-transparent grid lines behind
+      the items to visualize the grid structure. Useful during layout editing
+      and typically disabled in view-only mode.
+-}
+type alias GridViewConfig id msg =
+    { toMsg : Msg id -> msg
+    , config : GridConfig
+    , renderItem : id -> GridPosition -> Html msg
+    , showGridLines : Bool
+    }
+
+
+{-| Render the entire grid with all items and optional grid lines.
+
+Creates a position-relative container div sized to the grid's full width.
+The container height is determined by the tallest item's bottom edge to
+avoid unnecessary whitespace. When `showGridLines` is True, grid lines
+are rendered as a background layer behind the items.
+
+Each item in the grid is rendered via `viewGridItem` and positioned
+absolutely within the container. Items being dragged receive their
+delta offset from the DnD state.
+
+    viewGrid
+        { toMsg = DndMsg
+        , config = gridConfig
+        , renderItem = renderWidget
+        , showGridLines = True
+        }
+        model.dnd
+        model.grid
+
+-}
+viewGrid : GridViewConfig id msg -> State id -> Grid id -> Html msg
+viewGrid viewConfig state grid =
+    let
+        maxRow =
+            computeMaxRow grid.items
+
+        containerHeight =
+            toFloat (maxRow + 1) * (viewConfig.config.rowHeight + viewConfig.config.gap)
+
+        gridLines =
+            if viewConfig.showGridLines then
+                [ viewGridLines viewConfig.config (maxRow + 1) ]
+
+            else
+                []
+
+        items =
+            List.map (\item -> viewGridItem viewConfig state item) grid.items
+    in
+    div
+        [ Css.inlineStyle
+            [ Css.position Value.relative
+            , Css.width (Value.px (gridWidth viewConfig.config))
+            , Css.height (Value.px containerHeight)
+            ]
+        ]
+        (gridLines ++ items)
+
+
+{-| Compute the maximum row extent across all items.
+
+Returns the bottom-most row occupied by any item (row + height).
+Returns 0 when the grid is empty.
+-}
+computeMaxRow : List (GridItem id) -> Int
+computeMaxRow items =
+    List.foldl (\item acc -> max acc (item.position.row + item.position.height)) 0 items
+
+
+{-| Render a single grid item positioned via pixel coordinates.
+
+The item is wrapped in a position-absolute div whose left, top, width,
+and height are computed from the grid configuration. If the item is
+currently being dragged (its id matches the active drag), the drag
+delta is added to its position for real-time visual feedback.
+
+A smooth CSS transition is applied to non-dragged items so that when
+the grid re-layouts (e.g., after a drop), items animate to their new
+positions rather than jumping.
+
+    viewGridItem viewConfig model.dnd someGridItem
+
+-}
+viewGridItem : GridViewConfig id msg -> State id -> GridItem id -> Html msg
+viewGridItem viewConfig state item =
+    let
+        basePixels =
+            pixelStyles viewConfig.config item.position
+
+        isDragged =
+            isDraggedItem state item.id
+
+        dragStyles =
+            dragOffsetStyles state item.id
+
+        transitionStyles =
+            if isDragged then
+                []
+
+            else
+                [ Css.transitions
+                    [ { property = "left", duration = Value.ms 200, timing = Value.easeOut, delay = Value.ms 0 }
+                    , { property = "top", duration = Value.ms 200, timing = Value.easeOut, delay = Value.ms 0 }
+                    ]
+                ]
+    in
+    div
+        [ Css.inlineStyle (basePixels ++ dragStyles ++ transitionStyles ++ itemWrapperStyles isDragged) ]
+        [ viewConfig.renderItem item.id item.position ]
+
+
+{-| Base styles for an item wrapper div.
+
+Sets overflow to hidden so item content is clipped to the grid cell,
+and adjusts z-index when the item is being dragged so it appears above
+other items.
+-}
+itemWrapperStyles : Bool -> List Style
+itemWrapperStyles isDragged =
+    if isDragged then
+        [ Css.zIndex (Value.int_ 1000)
+        , Css.pointerEvents Value.none
+        , Css.opacity (Value.num 0.8)
+        ]
+
+    else
+        [ Css.zIndex (Value.int_ 1)
+        ]
+
+
+{-| Check whether the given item id matches the currently dragged item. -}
+isDraggedItem : State id -> id -> Bool
+isDraggedItem state itemId =
+    case state.operation of
+        NotDragging ->
+            False
+
+        Dragging drag ->
+            drag.item.id == itemId
+
+
+{-| Compute transform styles to offset a dragged item by the current delta.
+
+Returns an empty list when the item is not being dragged, so these styles
+can be appended unconditionally.
+-}
+dragOffsetStyles : State id -> id -> List Style
+dragOffsetStyles state itemId =
+    case state.operation of
+        NotDragging ->
+            []
+
+        Dragging drag ->
+            if drag.item.id == itemId then
+                [ Css.transform
+                    [ Value.translate
+                        (Value.px drag.delta.x)
+                        (Value.px drag.delta.y)
+                    ]
+                ]
+
+            else
+                []
+
+
+{-| Render a translucent dashed-border placeholder at a grid position.
+
+The placeholder indicates where a dragged item will land if dropped.
+It uses the same pixel conversion as regular items so it aligns
+perfectly with the grid. The visual style is a light blue background
+with a dashed blue border and rounded corners.
+
+    viewGridPlaceholder gridConfig dropTargetPosition
+
+-}
+viewGridPlaceholder : GridConfig -> GridPosition -> Html msg
+viewGridPlaceholder config position =
+    div
+        [ Css.inlineStyle (pixelStyles config position ++ placeholderStyles) ]
+        []
+
+
+{-| Visual styles for the drop placeholder.
+
+Semi-transparent blue background with a dashed border to distinguish
+it from actual grid items. Rounded corners soften the appearance.
+-}
+placeholderStyles : List Style
+placeholderStyles =
+    [ Css.backgroundColor (Value.rgba 59 130 246 0.1)
+    , Css.border (Value.px 2) Value.dashed (Value.rgba 59 130 246 0.4)
+    , Css.borderRadius (Value.px 4)
+    , Css.pointerEvents Value.none
+    , Css.zIndex (Value.int_ 0)
+    ]
+
+
+{-| Render vertical and horizontal grid lines within the grid container.
+
+The lines are rendered as thin semi-transparent borders on empty divs,
+positioned absolutely within the grid. Vertical lines appear at each
+column boundary, and horizontal lines appear at each row boundary.
+
+The second argument specifies how many rows of horizontal lines to render.
+This should be the total number of rows visible in the grid (typically
+computed from the tallest item's bottom edge).
+
+Grid lines use `pointer-events: none` so they never interfere with
+drag interactions on the items above them.
+
+    viewGridLines gridConfig 10
+
+-}
+viewGridLines : GridConfig -> Int -> Html msg
+viewGridLines config maxRows =
+    div
+        [ Css.inlineStyle
+            [ Css.position Value.absolute
+            , Css.left (Value.px 0)
+            , Css.top (Value.px 0)
+            , Css.width (Value.pct 100)
+            , Css.height (Value.pct 100)
+            , Css.pointerEvents Value.none
+            , Css.zIndex (Value.int_ 0)
+            ]
+        ]
+        (renderVerticalLines config ++ renderHorizontalLines config maxRows)
+
+
+{-| Render vertical grid lines at each column boundary.
+
+Creates a thin line at the left edge of each column (except the first,
+since the container edge serves as that boundary). Each line spans the
+full height of the grid.
+-}
+renderVerticalLines : GridConfig -> List (Html msg)
+renderVerticalLines config =
+    buildRange 1 config.columns
+        |> List.map (renderVerticalLine config)
+
+
+{-| Render a single vertical grid line at the given column index. -}
+renderVerticalLine : GridConfig -> Int -> Html msg
+renderVerticalLine config col =
+    let
+        pixel =
+            itemPosition config { col = col, row = 0, width = 1, height = 1 }
+
+        xPos =
+            pixel.x - config.gap / 2.0
+    in
+    div
+        [ Css.inlineStyle
+            [ Css.position Value.absolute
+            , Css.left (Value.px xPos)
+            , Css.top (Value.px 0)
+            , Css.width (Value.px 1)
+            , Css.height (Value.pct 100)
+            , Css.backgroundColor (Value.rgba 0 0 0 0.06)
+            , Css.pointerEvents Value.none
+            ]
+        ]
+        []
+
+
+{-| Render horizontal grid lines at each row boundary.
+
+Creates a thin line at the top edge of each row (except the first).
+Each line spans the full width of the grid.
+-}
+renderHorizontalLines : GridConfig -> Int -> List (Html msg)
+renderHorizontalLines config maxRows =
+    buildRange 1 maxRows
+        |> List.map (renderHorizontalLine config)
+
+
+{-| Render a single horizontal grid line at the given row index. -}
+renderHorizontalLine : GridConfig -> Int -> Html msg
+renderHorizontalLine config row =
+    let
+        pixel =
+            itemPosition config { col = 0, row = row, width = 1, height = 1 }
+
+        yPos =
+            pixel.y - config.gap / 2.0
+    in
+    div
+        [ Css.inlineStyle
+            [ Css.position Value.absolute
+            , Css.left (Value.px 0)
+            , Css.top (Value.px yPos)
+            , Css.width (Value.pct 100)
+            , Css.height (Value.px 1)
+            , Css.backgroundColor (Value.rgba 0 0 0 0.06)
+            , Css.pointerEvents Value.none
+            ]
+        ]
+        []
+
+
+{-| Convert a grid position to CSS pixel positioning styles.
+
+Computes the pixel coordinates (left, top, width, height) for the given
+grid position using the grid configuration's column count, row height,
+gap, and container width. Returns styles with `position: absolute` so the
+element is removed from normal flow and placed at the computed coordinates.
+
+These styles can be applied to any element that needs to be positioned
+within a grid container. The container must have `position: relative`
+for the absolute positioning to work correctly.
+
+    pixelStyles gridConfig { col = 2, row = 1, width = 4, height = 2 }
+    -- Returns styles for left, top, width, height, and position: absolute
+
+-}
+pixelStyles : GridConfig -> GridPosition -> List Style
+pixelStyles config position =
+    let
+        pixel =
+            itemPosition config position
+    in
+    [ Css.position Value.absolute
+    , Css.left (Value.px pixel.x)
+    , Css.top (Value.px pixel.y)
+    , Css.width (Value.px pixel.width)
+    , Css.height (Value.px pixel.height)
+    ]
+
+
+
+-- INTERNAL HELPERS
+
+
+{-| Build a list of integers from `start` (inclusive) to `end` (exclusive).
+
+Used to generate column and row indices for grid line rendering.
+Returns an empty list when `start >= end`.
+-}
+buildRange : Int -> Int -> List Int
+buildRange start end_ =
+    buildRangeHelp start end_ []
+        |> List.reverse
+
+
+{-| Tail-recursive helper for buildRange. -}
+buildRangeHelp : Int -> Int -> List Int -> List Int
+buildRangeHelp current end_ acc =
+    if current >= end_ then
+        acc
+
+    else
+        buildRangeHelp (current + 1) end_ (current :: acc)

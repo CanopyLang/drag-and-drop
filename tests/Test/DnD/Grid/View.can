@@ -1,0 +1,256 @@
+module Test.DnD.Grid.View exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD exposing (..)
+import DnD.Grid exposing (Grid, GridItem, GridConfig, GridPosition, empty, fromItems)
+import DnD.Grid.View exposing (..)
+import Html exposing (Html, div, text)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+sampleConfig : GridConfig
+sampleConfig =
+    DnD.Grid.defaultConfig
+
+
+mkItem : String -> Int -> Int -> Int -> Int -> GridItem String
+mkItem id col row w h =
+    { id = id
+    , position = { col = col, row = row, width = w, height = h }
+    , isStatic = False
+    }
+
+
+sampleGrid : Grid String
+sampleGrid =
+    fromItems 12
+        [ mkItem "a" 0 0 4 2
+        , mkItem "b" 4 0 4 2
+        , mkItem "c" 8 0 4 2
+        ]
+
+
+emptyGrid : Grid String
+emptyGrid =
+    empty 12
+
+
+tests : Test
+tests =
+    describe "DnD.Grid.View"
+        [ pixelStylesTests
+        , viewGridPlaceholderTests
+        , viewGridTests
+        , viewGridItemTests
+        , viewGridLinesTests
+        ]
+
+
+pixelStylesTests : Test
+pixelStylesTests =
+    describe "pixelStyles"
+        [ test "returns non-empty styles" <|
+            \() ->
+                pixelStyles sampleConfig { col = 0, row = 0, width = 1, height = 1 }
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 5 styles (position, left, top, width, height)" <|
+            \() ->
+                pixelStyles sampleConfig { col = 0, row = 0, width = 1, height = 1 }
+                    |> List.length
+                    |> Expect.equal 5
+        , test "different positions produce different styles" <|
+            \() ->
+                Expect.notEqual
+                    (pixelStyles sampleConfig { col = 0, row = 0, width = 1, height = 1 })
+                    (pixelStyles sampleConfig { col = 2, row = 1, width = 1, height = 1 })
+        , test "different sizes produce different styles" <|
+            \() ->
+                Expect.notEqual
+                    (pixelStyles sampleConfig { col = 0, row = 0, width = 1, height = 1 })
+                    (pixelStyles sampleConfig { col = 0, row = 0, width = 4, height = 2 })
+        , test "position at origin returns styles" <|
+            \() ->
+                pixelStyles sampleConfig { col = 0, row = 0, width = 12, height = 1 }
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "position at far column returns styles" <|
+            \() ->
+                pixelStyles sampleConfig { col = 8, row = 0, width = 4, height = 1 }
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "position at multiple rows returns styles" <|
+            \() ->
+                pixelStyles sampleConfig { col = 0, row = 5, width = 6, height = 3 }
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "custom config with different gap produces different styles" <|
+            \() ->
+                let
+                    customConfig =
+                        { sampleConfig | gap = 20 }
+
+                    pos =
+                        { col = 2, row = 1, width = 4, height = 2 }
+                in
+                Expect.notEqual
+                    (pixelStyles sampleConfig pos)
+                    (pixelStyles customConfig pos)
+        ]
+
+
+viewGridPlaceholderTests : Test
+viewGridPlaceholderTests =
+    describe "viewGridPlaceholder"
+        [ test "renders without error" <|
+            \() ->
+                let
+                    _ =
+                        viewGridPlaceholder sampleConfig { col = 0, row = 0, width = 4, height = 2 }
+                in
+                Expect.pass
+        , test "renders at different position without error" <|
+            \() ->
+                let
+                    _ =
+                        viewGridPlaceholder sampleConfig { col = 4, row = 2, width = 6, height = 1 }
+                in
+                Expect.pass
+        , test "renders with minimum size without error" <|
+            \() ->
+                let
+                    _ =
+                        viewGridPlaceholder sampleConfig { col = 0, row = 0, width = 1, height = 1 }
+                in
+                Expect.pass
+        , test "renders with full width without error" <|
+            \() ->
+                let
+                    _ =
+                        viewGridPlaceholder sampleConfig { col = 0, row = 0, width = 12, height = 1 }
+                in
+                Expect.pass
+        ]
+
+
+viewGridTests : Test
+viewGridTests =
+    describe "viewGrid"
+        [ test "renders populated grid without error" <|
+            \() ->
+                let
+                    config =
+                        { toMsg = identity
+                        , config = sampleConfig
+                        , renderItem = \_ _ -> div [] [ text "widget" ]
+                        , showGridLines = True
+                        }
+
+                    _ =
+                        viewGrid config init sampleGrid
+                in
+                Expect.pass
+        , test "renders empty grid without error" <|
+            \() ->
+                let
+                    config =
+                        { toMsg = identity
+                        , config = sampleConfig
+                        , renderItem = \_ _ -> div [] [ text "widget" ]
+                        , showGridLines = True
+                        }
+
+                    _ =
+                        viewGrid config init emptyGrid
+                in
+                Expect.pass
+        , test "renders grid without grid lines" <|
+            \() ->
+                let
+                    config =
+                        { toMsg = identity
+                        , config = sampleConfig
+                        , renderItem = \_ _ -> div [] [ text "widget" ]
+                        , showGridLines = False
+                        }
+
+                    _ =
+                        viewGrid config init sampleGrid
+                in
+                Expect.pass
+        ]
+
+
+viewGridItemTests : Test
+viewGridItemTests =
+    describe "viewGridItem"
+        [ test "renders item without error" <|
+            \() ->
+                let
+                    config =
+                        { toMsg = identity
+                        , config = sampleConfig
+                        , renderItem = \_ _ -> div [] [ text "widget" ]
+                        , showGridLines = False
+                        }
+
+                    _ =
+                        viewGridItem config init (mkItem "x" 0 0 4 2)
+                in
+                Expect.pass
+        , test "renders item with init state (not dragging)" <|
+            \() ->
+                let
+                    config =
+                        { toMsg = identity
+                        , config = sampleConfig
+                        , renderItem = \_ _ -> div [] [ text "content" ]
+                        , showGridLines = False
+                        }
+
+                    _ =
+                        viewGridItem config init (mkItem "y" 6 1 3 1)
+                in
+                Expect.pass
+        ]
+
+
+viewGridLinesTests : Test
+viewGridLinesTests =
+    describe "viewGridLines"
+        [ test "renders grid lines without error" <|
+            \() ->
+                let
+                    _ =
+                        viewGridLines sampleConfig 5
+                in
+                Expect.pass
+        , test "renders grid lines for 1 row" <|
+            \() ->
+                let
+                    _ =
+                        viewGridLines sampleConfig 1
+                in
+                Expect.pass
+        , test "renders grid lines for 0 rows" <|
+            \() ->
+                let
+                    _ =
+                        viewGridLines sampleConfig 0
+                in
+                Expect.pass
+        , test "renders grid lines for many rows" <|
+            \() ->
+                let
+                    _ =
+                        viewGridLines sampleConfig 20
+                in
+                Expect.pass
+        ]

@@ -1,0 +1,219 @@
+module DnD.Modifier exposing
+    ( Modifier(..)
+    , InertiaConfig
+    , restrictToHorizontalAxis
+    , restrictToVerticalAxis
+    , restrictToBounds
+    , snapToGrid
+    , inertia
+    , defaultInertiaConfig
+    , applyModifiers
+    , applyModifier
+    )
+
+
+{-| Modifiers transform the drag delta before it is applied to the dragged item.
+
+Modifiers compose: multiple modifiers are applied in sequence, each transforming
+the output of the previous one. This allows combining constraints like axis
+locking with grid snapping.
+
+@docs Modifier, InertiaConfig
+@docs restrictToHorizontalAxis, restrictToVerticalAxis, restrictToBounds, snapToGrid
+@docs inertia, defaultInertiaConfig
+
+@docs applyModifiers, applyModifier
+
+-}
+
+
+{-| A drag delta representing movement from the start position. -}
+type alias Delta =
+    { x : Float
+    , y : Float
+    }
+
+
+{-| A bounding rectangle. -}
+type alias Rect =
+    { x : Float
+    , y : Float
+    , width : Float
+    , height : Float
+    }
+
+
+{-| Configuration for the inertia modifier.
+
+  - `resistance`: How quickly velocity decays. Higher values slow down faster.
+    Range 0.0 to 1.0, where 0.0 is no resistance and 1.0 is full resistance.
+  - `minSpeed`: Minimum speed threshold below which motion stops.
+  - `endOnly`: When True, inertia is only applied after the drag ends
+    (for throw-to-scroll effects). When False, applied during drag.
+-}
+type alias InertiaConfig =
+    { resistance : Float
+    , minSpeed : Float
+    , endOnly : Bool
+    }
+
+
+{-| A modifier that transforms the drag delta.
+
+Each variant represents a built-in transformation. Modifiers are applied
+in the order they appear in the list.
+-}
+type Modifier id
+    = RestrictHorizontal
+    | RestrictVertical
+    | RestrictBounds Rect
+    | SnapGrid Float Float
+    | Inertia InertiaConfig
+
+
+{-| Lock movement to the horizontal axis only.
+
+Vertical movement is zeroed out, so the item can only move left and right.
+
+    modifiers = [ DnD.Modifier.restrictToHorizontalAxis ]
+-}
+restrictToHorizontalAxis : Modifier id
+restrictToHorizontalAxis =
+    RestrictHorizontal
+
+
+{-| Lock movement to the vertical axis only.
+
+Horizontal movement is zeroed out, so the item can only move up and down.
+
+    modifiers = [ DnD.Modifier.restrictToVerticalAxis ]
+-}
+restrictToVerticalAxis : Modifier id
+restrictToVerticalAxis =
+    RestrictVertical
+
+
+{-| Restrict dragging to within the given bounding rectangle.
+
+The delta is clamped so the item cannot be moved outside the bounds.
+The bounds are specified as absolute coordinates and dimensions.
+
+    modifiers =
+        [ DnD.Modifier.restrictToBounds
+            { x = 0, y = 0, width = 800, height = 600 }
+        ]
+-}
+restrictToBounds : Rect -> Modifier id
+restrictToBounds bounds =
+    RestrictBounds bounds
+
+
+{-| Snap the drag position to a grid.
+
+The delta is rounded to the nearest grid cell in both axes.
+
+    modifiers = [ DnD.Modifier.snapToGrid 20.0 20.0 ]
+-}
+snapToGrid : Float -> Float -> Modifier id
+snapToGrid gridX gridY =
+    SnapGrid gridX gridY
+
+
+{-| Create an inertia modifier for velocity-based movement.
+
+Uses spring-like resistance to gradually slow drag movement,
+creating a physically plausible deceleration effect.
+
+    modifiers = [ DnD.Modifier.inertia DnD.Modifier.defaultInertiaConfig ]
+-}
+inertia : InertiaConfig -> Modifier id
+inertia config =
+    Inertia config
+
+
+{-| Default inertia configuration.
+
+Moderate resistance with a 1.0 px/frame minimum speed threshold.
+Applied only at drag end by default.
+-}
+defaultInertiaConfig : InertiaConfig
+defaultInertiaConfig =
+    { resistance = 0.5
+    , minSpeed = 1.0
+    , endOnly = True
+    }
+
+
+{-| Apply a list of modifiers to a delta in sequence.
+
+Each modifier transforms the delta, and the result is passed to the next.
+
+    delta = { x = 15.7, y = 23.2 }
+    modified = applyModifiers [ snapToGrid 10 10 ] { x = 0, y = 0, width = 100, height = 100 } delta
+    -- { x = 20.0, y = 20.0 }
+-}
+applyModifiers : List (Modifier id) -> Rect -> Delta -> Delta
+applyModifiers modifiers itemRect delta =
+    List.foldl (\modifier d -> applyModifier modifier itemRect d) delta modifiers
+
+
+{-| Apply a single modifier to a delta.
+
+Takes the modifier, the dragged item's original rect, and the current delta.
+Returns the transformed delta.
+-}
+applyModifier : Modifier id -> Rect -> Delta -> Delta
+applyModifier modifier itemRect delta =
+    case modifier of
+        RestrictHorizontal ->
+            { x = delta.x, y = 0.0 }
+
+        RestrictVertical ->
+            { x = 0.0, y = delta.y }
+
+        RestrictBounds bounds ->
+            let
+                newX =
+                    itemRect.x + delta.x
+
+                newY =
+                    itemRect.y + delta.y
+
+                clampedX =
+                    clamp bounds.x (bounds.x + bounds.width - itemRect.width) newX
+
+                clampedY =
+                    clamp bounds.y (bounds.y + bounds.height - itemRect.height) newY
+            in
+            { x = clampedX - itemRect.x
+            , y = clampedY - itemRect.y
+            }
+
+        SnapGrid gridX gridY ->
+            if gridX <= 0 || gridY <= 0 then
+                delta
+
+            else
+                { x = toFloat (round (delta.x / gridX)) * gridX
+                , y = toFloat (round (delta.y / gridY)) * gridY
+                }
+
+        Inertia config ->
+            if config.endOnly then
+                delta
+
+            else
+                let
+                    factor =
+                        1.0 - config.resistance
+
+                    speed =
+                        sqrt (delta.x * delta.x + delta.y * delta.y)
+                in
+                if speed < config.minSpeed then
+                    { x = 0.0, y = 0.0 }
+
+                else
+                    { x = delta.x * factor
+                    , y = delta.y * factor
+                    }

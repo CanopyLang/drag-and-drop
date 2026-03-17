@@ -1,0 +1,293 @@
+module Test.DnD.Sortable exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD
+import DnD.Sortable exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.Sortable"
+        [ reorderTests
+        , moveBetweenTests
+        , insertAtTests
+        , removeItemTests
+        , moveItemTests
+        , findIndexTests
+        , defaultItemStateTests
+        , itemStateTests
+        ]
+
+
+dummyRect : DnD.Rect
+dummyRect =
+    { x = 0, y = 0, width = 50, height = 50 }
+
+
+reorderTests : Test
+reorderTests =
+    describe "reorder"
+        [ test "moves item to target position (forward)" <|
+            \() ->
+                let
+                    dragEnd =
+                        { active = { id = "b", rect = dummyRect, itemType = "" }
+                        , over = Just { id = "d", rect = dummyRect, accept = Nothing }
+                        }
+                in
+                reorder dragEnd [ "a", "b", "c", "d", "e" ]
+                    |> Expect.equal [ "a", "c", "d", "b", "e" ]
+        , test "moves item to target position (backward)" <|
+            \() ->
+                let
+                    dragEnd =
+                        { active = { id = "d", rect = dummyRect, itemType = "" }
+                        , over = Just { id = "b", rect = dummyRect, accept = Nothing }
+                        }
+                in
+                reorder dragEnd [ "a", "b", "c", "d", "e" ]
+                    |> Expect.equal [ "a", "d", "b", "c", "e" ]
+        , test "no over target returns list unchanged" <|
+            \() ->
+                let
+                    dragEnd =
+                        { active = { id = "b", rect = dummyRect, itemType = "" }
+                        , over = Nothing
+                        }
+                in
+                reorder dragEnd [ "a", "b", "c", "d", "e" ]
+                    |> Expect.equal [ "a", "b", "c", "d", "e" ]
+        , test "same position returns unchanged" <|
+            \() ->
+                let
+                    dragEnd =
+                        { active = { id = "c", rect = dummyRect, itemType = "" }
+                        , over = Just { id = "c", rect = dummyRect, accept = Nothing }
+                        }
+                in
+                reorder dragEnd [ "a", "b", "c", "d" ]
+                    |> Expect.equal [ "a", "b", "c", "d" ]
+        , test "first to last" <|
+            \() ->
+                let
+                    dragEnd =
+                        { active = { id = "a", rect = dummyRect, itemType = "" }
+                        , over = Just { id = "e", rect = dummyRect, accept = Nothing }
+                        }
+                in
+                reorder dragEnd [ "a", "b", "c", "d", "e" ]
+                    |> Expect.equal [ "b", "c", "d", "e", "a" ]
+        , test "last to first" <|
+            \() ->
+                let
+                    dragEnd =
+                        { active = { id = "e", rect = dummyRect, itemType = "" }
+                        , over = Just { id = "a", rect = dummyRect, accept = Nothing }
+                        }
+                in
+                reorder dragEnd [ "a", "b", "c", "d", "e" ]
+                    |> Expect.equal [ "e", "a", "b", "c", "d" ]
+        ]
+
+
+moveBetweenTests : Test
+moveBetweenTests =
+    describe "moveBetween"
+        [ test "moves item from source to destination" <|
+            \() ->
+                let
+                    result =
+                        moveBetween
+                            { from = [ "a", "b", "c" ]
+                            , to = [ "x", "y" ]
+                            , active = "b"
+                            , over = "y"
+                            }
+                in
+                Expect.equal { from = [ "a", "c" ], to = [ "x", "b", "y" ] } result
+        , test "moves to beginning of target" <|
+            \() ->
+                let
+                    result =
+                        moveBetween
+                            { from = [ "a", "b" ]
+                            , to = [ "x", "y" ]
+                            , active = "a"
+                            , over = "x"
+                            }
+                in
+                Expect.equal { from = [ "b" ], to = [ "a", "x", "y" ] } result
+        , test "moves to empty destination appends" <|
+            \() ->
+                let
+                    result =
+                        moveBetween
+                            { from = [ "a", "b" ]
+                            , to = []
+                            , active = "a"
+                            , over = "z"
+                            }
+                in
+                Expect.equal { from = [ "b" ], to = [ "a" ] } result
+        ]
+
+
+insertAtTests : Test
+insertAtTests =
+    describe "insertAt"
+        [ test "inserts at beginning" <|
+            \() ->
+                insertAt 0 "x" [ "a", "b", "c" ]
+                    |> Expect.equal [ "x", "a", "b", "c" ]
+        , test "inserts in middle" <|
+            \() ->
+                insertAt 1 "x" [ "a", "b", "c" ]
+                    |> Expect.equal [ "a", "x", "b", "c" ]
+        , test "inserts at end" <|
+            \() ->
+                insertAt 3 "x" [ "a", "b", "c" ]
+                    |> Expect.equal [ "a", "b", "c", "x" ]
+        , test "inserts beyond end" <|
+            \() ->
+                insertAt 10 "x" [ "a", "b" ]
+                    |> Expect.equal [ "a", "b", "x" ]
+        , test "inserts into empty list" <|
+            \() ->
+                insertAt 0 "x" []
+                    |> Expect.equal [ "x" ]
+        , test "negative index inserts at beginning" <|
+            \() ->
+                insertAt -1 "x" [ "a", "b" ]
+                    |> Expect.equal [ "x", "a", "b" ]
+        ]
+
+
+removeItemTests : Test
+removeItemTests =
+    describe "removeItem"
+        [ test "removes first occurrence" <|
+            \() ->
+                removeItem "b" [ "a", "b", "c", "b" ]
+                    |> Expect.equal [ "a", "c", "b" ]
+        , test "removes from beginning" <|
+            \() ->
+                removeItem "a" [ "a", "b", "c" ]
+                    |> Expect.equal [ "b", "c" ]
+        , test "removes from end" <|
+            \() ->
+                removeItem "c" [ "a", "b", "c" ]
+                    |> Expect.equal [ "a", "b" ]
+        , test "missing item returns unchanged" <|
+            \() ->
+                removeItem "z" [ "a", "b", "c" ]
+                    |> Expect.equal [ "a", "b", "c" ]
+        , test "empty list returns empty" <|
+            \() ->
+                removeItem "a" []
+                    |> Expect.equal []
+        , test "single item list" <|
+            \() ->
+                removeItem "a" [ "a" ]
+                    |> Expect.equal []
+        ]
+
+
+moveItemTests : Test
+moveItemTests =
+    describe "moveItem"
+        [ test "moves forward" <|
+            \() ->
+                moveItem "b" "d" [ "a", "b", "c", "d", "e" ]
+                    |> Expect.equal [ "a", "c", "d", "b", "e" ]
+        , test "moves backward" <|
+            \() ->
+                moveItem "d" "b" [ "a", "b", "c", "d", "e" ]
+                    |> Expect.equal [ "a", "d", "b", "c", "e" ]
+        , test "move to self is no-op" <|
+            \() ->
+                moveItem "c" "c" [ "a", "b", "c", "d" ]
+                    |> Expect.equal [ "a", "b", "c", "d" ]
+        ]
+
+
+findIndexTests : Test
+findIndexTests =
+    describe "findIndex"
+        [ test "finds at beginning" <|
+            \() ->
+                findIndex "a" [ "a", "b", "c" ]
+                    |> Expect.equal (Just 0)
+        , test "finds in middle" <|
+            \() ->
+                findIndex "b" [ "a", "b", "c" ]
+                    |> Expect.equal (Just 1)
+        , test "finds at end" <|
+            \() ->
+                findIndex "c" [ "a", "b", "c" ]
+                    |> Expect.equal (Just 2)
+        , test "not found returns Nothing" <|
+            \() ->
+                findIndex "z" [ "a", "b", "c" ]
+                    |> Expect.equal Nothing
+        , test "empty list returns Nothing" <|
+            \() ->
+                findIndex "a" []
+                    |> Expect.equal Nothing
+        ]
+
+
+defaultItemStateTests : Test
+defaultItemStateTests =
+    describe "defaultItemState"
+        [ test "all fields are default" <|
+            \() ->
+                let
+                    s =
+                        defaultItemState
+                in
+                Expect.equal
+                    { isDragging = False
+                    , isOver = False
+                    , transformX = 0
+                    , transformY = 0
+                    }
+                    s
+        ]
+
+
+itemStateTests : Test
+itemStateTests =
+    describe "itemState"
+        [ test "not dragging returns default" <|
+            \() ->
+                itemState DnD.init "item1"
+                    |> Expect.equal defaultItemState
+        , test "dragged item has isDragging true" <|
+            \() ->
+                let
+                    state =
+                        DnD.update [] dummyRect
+                            (DnD.StartDrag { id = "item1", rect = dummyRect, itemType = "" } { x = 10, y = 10 })
+                            DnD.init
+                in
+                (itemState state "item1").isDragging
+                    |> Expect.equal True
+        , test "non-dragged item has isDragging false" <|
+            \() ->
+                let
+                    state =
+                        DnD.update [] dummyRect
+                            (DnD.StartDrag { id = "item1", rect = dummyRect, itemType = "" } { x = 10, y = 10 })
+                            DnD.init
+                in
+                (itemState state "item2").isDragging
+                    |> Expect.equal False
+        ]

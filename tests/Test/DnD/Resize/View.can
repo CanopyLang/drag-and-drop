@@ -1,0 +1,266 @@
+module Test.DnD.Resize.View exposing (main, tests)
+
+import Basics exposing (..)
+import DnD exposing (Rect)
+import DnD.Resize exposing (HandlePosition(..), handlePositions, handleCursor)
+import DnD.Resize.View exposing (..)
+import Html exposing (Html, div, text)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+type TestMsg
+    = StartResize HandlePosition
+
+
+dummyRect : Rect
+dummyRect =
+    { x = 50, y = 50, width = 200, height = 150 }
+
+
+tests : Test
+tests =
+    describe "DnD.Resize.View"
+        [ defaultHandleSizeTests
+        , defaultHandleStyleTests
+        , handleStyleVariantTests
+        , viewResizeHandlesTests
+        , viewHandleTests
+        ]
+
+
+defaultHandleSizeTests : Test
+defaultHandleSizeTests =
+    describe "defaultHandleSize"
+        [ test "is 8.0" <|
+            \() ->
+                defaultHandleSize
+                    |> Expect.equal 8.0
+        , test "is positive" <|
+            \() ->
+                Expect.true "handle size should be > 0" (defaultHandleSize > 0)
+        ]
+
+
+defaultHandleStyleTests : Test
+defaultHandleStyleTests =
+    describe "defaultHandleStyle"
+        [ test "is Squares" <|
+            \() ->
+                case defaultHandleStyle of
+                    Squares ->
+                        Expect.pass
+
+                    _ ->
+                        Expect.fail "Expected Squares"
+        , test "is not Dots" <|
+            \() ->
+                case defaultHandleStyle of
+                    Dots ->
+                        Expect.fail "Expected Squares, not Dots"
+
+                    _ ->
+                        Expect.pass
+        , test "is not Lines" <|
+            \() ->
+                case defaultHandleStyle of
+                    Lines ->
+                        Expect.fail "Expected Squares, not Lines"
+
+                    _ ->
+                        Expect.pass
+        ]
+
+
+handleStyleVariantTests : Test
+handleStyleVariantTests =
+    describe "HandleStyle variants"
+        [ test "Dots variant exists" <|
+            \() ->
+                let
+                    _ : HandleStyle
+                    _ =
+                        Dots
+                in
+                Expect.pass
+        , test "Squares variant exists" <|
+            \() ->
+                let
+                    _ : HandleStyle
+                    _ =
+                        Squares
+                in
+                Expect.pass
+        , test "Lines variant exists" <|
+            \() ->
+                let
+                    _ : HandleStyle
+                    _ =
+                        Lines
+                in
+                Expect.pass
+        , test "all three variants are distinct" <|
+            \() ->
+                Expect.true "variants should differ"
+                    (Dots /= Squares && Squares /= Lines && Dots /= Lines)
+        ]
+
+
+viewResizeHandlesTests : Test
+viewResizeHandlesTests =
+    describe "viewResizeHandles"
+        [ test "renders with Squares style without error" <|
+            \() ->
+                let
+                    config =
+                        { onStart = StartResize
+                        , handleSize = defaultHandleSize
+                        , handleStyle = Squares
+                        }
+
+                    _ =
+                        viewResizeHandles config dummyRect
+                in
+                Expect.pass
+        , test "renders with Dots style without error" <|
+            \() ->
+                let
+                    config =
+                        { onStart = StartResize
+                        , handleSize = defaultHandleSize
+                        , handleStyle = Dots
+                        }
+
+                    _ =
+                        viewResizeHandles config dummyRect
+                in
+                Expect.pass
+        , test "renders with Lines style without error" <|
+            \() ->
+                let
+                    config =
+                        { onStart = StartResize
+                        , handleSize = defaultHandleSize
+                        , handleStyle = Lines
+                        }
+
+                    _ =
+                        viewResizeHandles config dummyRect
+                in
+                Expect.pass
+        , test "renders with custom handle size" <|
+            \() ->
+                let
+                    config =
+                        { onStart = StartResize
+                        , handleSize = 16.0
+                        , handleStyle = Squares
+                        }
+
+                    _ =
+                        viewResizeHandles config dummyRect
+                in
+                Expect.pass
+        , test "renders with zero-size rect" <|
+            \() ->
+                let
+                    config =
+                        { onStart = StartResize
+                        , handleSize = 8.0
+                        , handleStyle = Squares
+                        }
+
+                    _ =
+                        viewResizeHandles config { x = 0, y = 0, width = 0, height = 0 }
+                in
+                Expect.pass
+        ]
+
+
+viewHandleTests : Test
+viewHandleTests =
+    describe "viewHandle"
+        [ test "renders North handle without error" <|
+            \() ->
+                let
+                    config =
+                        { onStart = StartResize
+                        , handleSize = defaultHandleSize
+                        , handleStyle = Squares
+                        }
+
+                    _ =
+                        viewHandle config North dummyRect
+                in
+                Expect.pass
+        , test "renders South handle without error" <|
+            \() ->
+                let
+                    config =
+                        { onStart = StartResize
+                        , handleSize = defaultHandleSize
+                        , handleStyle = Squares
+                        }
+
+                    _ =
+                        viewHandle config South dummyRect
+                in
+                Expect.pass
+        , test "renders East handle without error" <|
+            \() ->
+                let
+                    config =
+                        { onStart = StartResize
+                        , handleSize = defaultHandleSize
+                        , handleStyle = Squares
+                        }
+
+                    _ =
+                        viewHandle config East dummyRect
+                in
+                Expect.pass
+        , test "renders NorthEast corner handle without error" <|
+            \() ->
+                let
+                    config =
+                        { onStart = StartResize
+                        , handleSize = defaultHandleSize
+                        , handleStyle = Squares
+                        }
+
+                    _ =
+                        viewHandle config NorthEast dummyRect
+                in
+                Expect.pass
+        , test "renders SouthWest corner handle without error" <|
+            \() ->
+                let
+                    config =
+                        { onStart = StartResize
+                        , handleSize = defaultHandleSize
+                        , handleStyle = Dots
+                        }
+
+                    _ =
+                        viewHandle config SouthWest dummyRect
+                in
+                Expect.pass
+        , test "renders all 8 handle positions without error" <|
+            \() ->
+                let
+                    config =
+                        { onStart = StartResize
+                        , handleSize = defaultHandleSize
+                        , handleStyle = Squares
+                        }
+
+                    allHandles =
+                        List.map (\pos -> viewHandle config pos dummyRect) handlePositions
+                in
+                Expect.equal 8 (List.length allHandles)
+        ]

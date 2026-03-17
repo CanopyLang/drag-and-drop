@@ -1,0 +1,349 @@
+module DnD.MultiSelect.View exposing
+    ( MultiDragConfig
+    , viewLasso
+    , viewMultiDragOverlay
+    , viewCountBadge
+    , stackStyles
+    , defaultMaxStack
+    , defaultStackOffset
+    )
+
+
+{-| Rendering for multi-select drag-and-drop operations.
+
+Provides two primary visual components: a lasso rectangle that the user draws
+to select multiple items, and a stacked overlay that shows selected items
+following the cursor during a multi-drag.
+
+The lasso rectangle renders as a semi-transparent blue region with a dashed
+border, using `position: fixed` and `pointer-events: none` so it floats
+above all content without intercepting events. When no lasso is active, an
+empty `div` is returned to keep the DOM node stable.
+
+The multi-drag overlay renders a stack of the selected items' rendered views,
+offset and scaled to create a "deck of cards" effect. A count badge can be
+overlaid to show how many items are selected.
+
+# Configuration
+@docs MultiDragConfig, defaultMaxStack, defaultStackOffset
+
+# Lasso
+@docs viewLasso
+
+# Multi-Drag Overlay
+@docs viewMultiDragOverlay, viewCountBadge
+
+# Stack Helpers
+@docs stackStyles
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import DnD exposing (State, DragOperation(..), Delta)
+import DnD.MultiSelect exposing (Selection, LassoRect, activeLasso, selectedItems, selectedCount, hasSelection)
+import Html exposing (Html, Attribute, div, text, span)
+import Html.Attributes exposing (style, attribute)
+
+
+{-| Configuration for the multi-drag stack overlay.
+
+  - `renderItem`: A function that renders an individual item given its id.
+      This is called for each visible item in the stack.
+  - `maxStack`: The maximum number of items to render in the visual stack.
+      Items beyond this count are hidden but still counted in the badge.
+  - `stackOffset`: The vertical pixel offset between successive items in the
+      stack, creating the "fanned" appearance.
+-}
+type alias MultiDragConfig id msg =
+    { renderItem : id -> Html msg
+    , maxStack : Int
+    , stackOffset : Float
+    }
+
+
+{-| The default maximum number of items to show in a multi-drag stack.
+
+Items beyond this limit are not rendered but are still represented by the
+count badge. Using 3 provides a clear visual "deck" without cluttering the
+overlay.
+-}
+defaultMaxStack : Int
+defaultMaxStack =
+    3
+
+
+{-| The default vertical pixel offset between items in a multi-drag stack.
+
+A value of 3.0 pixels produces a subtle stacking effect where each
+successive item peeks out behind the one above it.
+-}
+defaultStackOffset : Float
+defaultStackOffset =
+    3.0
+
+
+{-| Render a semi-transparent blue lasso selection rectangle.
+
+When the selection has an active lasso (the user is click-dragging to
+draw a rectangle), this renders a fixed-position div with a translucent
+blue background and dashed border. The rectangle is computed from the
+lasso's start and current coordinates, handling the case where the user
+drags in any direction (up, down, left, right).
+
+When no lasso is active, returns an empty `div` so the DOM node remains
+stable and no mount/unmount flicker occurs.
+
+    viewLasso model.selection
+
+-}
+viewLasso : Selection id -> Html msg
+viewLasso selection =
+    case activeLasso selection of
+        Nothing ->
+            div [] []
+
+        Just lassoRect ->
+            div
+                [ Css.inlineStyle (lassoStyles lassoRect) ]
+                []
+
+
+{-| Compute the CSS styles for the lasso rectangle.
+
+Normalizes the lasso coordinates so that position and dimensions are
+always positive regardless of drag direction, then applies fixed
+positioning with a semi-transparent blue fill.
+-}
+lassoStyles : LassoRect -> List Style
+lassoStyles lassoRect =
+    let
+        x =
+            min lassoRect.startX lassoRect.currentX
+
+        y =
+            min lassoRect.startY lassoRect.currentY
+
+        w =
+            abs (lassoRect.currentX - lassoRect.startX)
+
+        h =
+            abs (lassoRect.currentY - lassoRect.startY)
+    in
+    [ Css.position Value.fixed
+    , Css.left (Value.px x)
+    , Css.top (Value.px y)
+    , Css.width (Value.px w)
+    , Css.height (Value.px h)
+    , Css.backgroundColor (Value.rgba 59 130 246 0.15)
+    , Css.border (Value.px 1) Value.dashed (Value.rgba 59 130 246 0.6)
+    , Css.pointerEvents Value.none
+    , Css.zIndex (Value.int_ 9999)
+    ]
+
+
+{-| Render a stacked overlay of selected items following the cursor
+during a multi-drag operation.
+
+When the drag-and-drop state indicates an active drag and the selection
+contains items, this renders a fixed-position container at the cursor
+location. Inside the container, up to `maxStack` items are rendered
+using `renderItem`, each offset and scaled according to `stackStyles`
+to create a visual stack effect.
+
+When no drag is active or no items are selected, returns an empty `div`.
+
+    viewMultiDragOverlay
+        { renderItem = viewCard
+        , maxStack = 3
+        , stackOffset = 3.0
+        }
+        model.dnd
+        model.selection
+
+-}
+viewMultiDragOverlay : MultiDragConfig id msg -> State id -> Selection id -> Html msg
+viewMultiDragOverlay config state selection =
+    case state.operation of
+        NotDragging ->
+            div [] []
+
+        Dragging drag ->
+            if not (hasSelection selection) then
+                div [] []
+
+            else
+                let
+                    items =
+                        selectedItems selection
+
+                    visibleItems =
+                        List.take config.maxStack items
+
+                    count =
+                        selectedCount selection
+
+                    totalVisible =
+                        List.length visibleItems
+                in
+                div
+                    [ Css.inlineStyle
+                        [ Css.position Value.fixed
+                        , Css.left (Value.px 0)
+                        , Css.top (Value.px 0)
+                        , Css.pointerEvents Value.none
+                        , Css.zIndex (Value.int_ 10001)
+                        , Css.transform
+                            [ Value.translate
+                                (Value.px (drag.item.rect.x + drag.delta.x))
+                                (Value.px (drag.item.rect.y + drag.delta.y))
+                            ]
+                        ]
+                    ]
+                    (renderStackItems config visibleItems totalVisible count)
+
+
+{-| Render the stack items and optional count badge. -}
+renderStackItems : MultiDragConfig id msg -> List id -> Int -> Int -> List (Html msg)
+renderStackItems config visibleItems totalVisible count =
+    let
+        indexedItems =
+            indexList 0 visibleItems
+
+        renderedItems =
+            List.map (renderStackItem config totalVisible) indexedItems
+
+        badge =
+            if count > 1 then
+                [ viewCountBadge count ]
+
+            else
+                []
+    in
+    renderedItems ++ badge
+
+
+{-| Render a single item in the stack with its position/scale styles. -}
+renderStackItem : MultiDragConfig id msg -> Int -> ( Int, id ) -> Html msg
+renderStackItem config totalVisible ( index, itemId ) =
+    div
+        [ Css.inlineStyle (stackStyles index totalVisible ++ stackItemBaseStyles config.stackOffset) ]
+        [ config.renderItem itemId ]
+
+
+{-| Base styles applied to every stack item container.
+
+Positions the item absolutely within the overlay wrapper so that
+stack offset transforms are relative to the overlay origin.
+-}
+stackItemBaseStyles : Float -> List Style
+stackItemBaseStyles _ =
+    [ Css.position Value.absolute
+    , Css.left (Value.px 0)
+    , Css.top (Value.px 0)
+    ]
+
+
+{-| Compute styles for a single item's position within the multi-drag stack.
+
+Given the item's index within the visible stack (0-based) and the total
+number of visible items, returns CSS styles that:
+
+  - Apply a `translateY` offset of `index * 3.0` pixels to stagger items
+    vertically.
+  - Scale the item to `1.0 - index * 0.02` so that items further back in the
+    stack appear slightly smaller.
+  - Set `z-index` to decrease with index so the front item is on top.
+
+The front item (index 0) gets `scale(1.0)` and the highest z-index.
+The second item gets `scale(0.98)` and a lower z-index, and so on.
+
+    stackStyles 0 3 -- front item: no offset, full scale, highest z-index
+    stackStyles 1 3 -- second item: 3px down, 0.98 scale
+    stackStyles 2 3 -- third item: 6px down, 0.96 scale
+
+-}
+stackStyles : Int -> Int -> List Style
+stackStyles index total =
+    let
+        offset =
+            toFloat index * defaultStackOffset
+
+        scaleValue =
+            1.0 - toFloat index * 0.02
+
+        zIndexValue =
+            total - index
+    in
+    [ Css.transform
+        [ Value.translate (Value.px 0) (Value.px offset)
+        , Value.scale scaleValue scaleValue
+        ]
+    , Css.zIndex (Value.int_ zIndexValue)
+    ]
+
+
+{-| Render a circular count badge showing how many items are selected.
+
+The badge is a small circle with a blue background and white text,
+positioned at the top-right corner of its parent container. It
+displays the given count as a string.
+
+Useful as a visual indicator during multi-drag to show the total
+number of items being moved, especially when some items are hidden
+because they exceed `maxStack`.
+
+    viewCountBadge 5
+
+-}
+viewCountBadge : Int -> Html msg
+viewCountBadge count =
+    div
+        [ Css.inlineStyle badgeStyles ]
+        [ text (String.fromInt count) ]
+
+
+{-| Styles for the count badge circle.
+
+Positions the badge at the top-right of its parent with a blue
+background, white text, and a circular shape via border-radius.
+The badge has a minimum width to stay circular with single digits
+and grows to accommodate larger numbers.
+-}
+badgeStyles : List Style
+badgeStyles =
+    [ Css.position Value.absolute
+    , Css.top (Value.px -8)
+    , Css.right (Value.px -8)
+    , Css.minWidth (Value.px 20)
+    , Css.height (Value.px 20)
+    , Css.borderRadius (Value.px 10)
+    , Css.backgroundColor (Value.rgb 59 130 246)
+    , Css.color (Value.rgb 255 255 255)
+    , Css.fontSize (Value.px 11)
+    , Css.fontWeight Value.bold
+    , Css.display Value.flex_
+    , Css.alignItems Value.center
+    , Css.justifyContent Value.center
+    , Css.lineHeight (Value.num 1.0)
+    , Css.paddingLeft (Value.px 4)
+    , Css.paddingRight (Value.px 4)
+    , Css.pointerEvents Value.none
+    , Css.zIndex (Value.int_ 10002)
+    ]
+
+
+
+-- INTERNAL HELPERS
+
+
+{-| Tag each element of a list with its 0-based index. -}
+indexList : Int -> List a -> List ( Int, a )
+indexList startIndex list =
+    case list of
+        [] ->
+            []
+
+        first :: rest ->
+            ( startIndex, first ) :: indexList (startIndex + 1) rest

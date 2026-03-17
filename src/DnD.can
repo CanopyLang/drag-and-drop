@@ -1,0 +1,562 @@
+module DnD exposing
+    ( State
+    , DragOperation(..)
+    , ActiveDrag
+    , DragItem
+    , DropTarget
+    , Delta
+    , Rect
+    , Point
+    , DragStart
+    , DragOver
+    , DragEnd
+    , Msg(..)
+    , Config
+    , defaultConfig
+    , init
+    , update
+    , updateWith
+    , activeDrag
+    , isDragging
+    , isDraggingType
+    , dragDelta
+    , currentAnnouncement
+    , translateRect
+    , DropAnimState
+    , dropAnimation
+    , liftProgress
+    , isAnimating
+    )
+
+
+{-| Core drag-and-drop state management.
+
+This module provides the opaque state, lifecycle events, and update
+function for drag-and-drop operations. Users integrate this into their
+TEA model by storing a `State` and forwarding messages through `update`.
+
+# State
+@docs State, init, activeDrag, isDragging, isDraggingType, dragDelta, dropAnimation, liftProgress, isAnimating
+
+# Configuration
+@docs Config, defaultConfig
+
+# Events
+@docs DragStart, DragOver, DragEnd
+
+# Messages
+@docs Msg, update, updateWith
+
+# Types
+@docs DragOperation, ActiveDrag, DragItem, DropTarget, Delta, Rect, Point
+
+# Utilities
+@docs currentAnnouncement, translateRect
+
+-}
+
+
+import DnD.Modifier as Modifier exposing (Modifier)
+
+
+{-| Opaque state for a drag-and-drop context.
+
+Store this in your model and pass it to `update`, `subscriptions`,
+and view helpers. Tracks the current drag operation, drop animation
+state, and lift progress for smooth visual transitions.
+-}
+type alias State id =
+    { operation : DragOperation id
+    , announcement : String
+    , dropAnim : Maybe DropAnimState
+    , liftProg : Float
+    }
+
+
+{-| The current drag operation, if any. -}
+type DragOperation id
+    = NotDragging
+    | Dragging (ActiveDrag id)
+
+
+{-| Details of an active drag operation. -}
+type alias ActiveDrag id =
+    { item : DragItem id
+    , current : Point
+    , delta : Delta
+    , over : Maybe (DropTarget id)
+    }
+
+
+{-| A draggable item with its id, bounding rect, and item type.
+
+The `itemType` field enables type-based filtering so that droppables
+can accept only certain kinds of draggables.
+-}
+type alias DragItem id =
+    { id : id
+    , rect : Rect
+    , itemType : String
+    }
+
+
+{-| A drop target with its id, bounding rect, and accepted types.
+
+When `accept` is `Nothing`, the target accepts all item types.
+When `accept` is `Just types`, only items whose `itemType` is in the
+list will be considered valid drops.
+-}
+type alias DropTarget id =
+    { id : id
+    , rect : Rect
+    , accept : Maybe (List String)
+    }
+
+
+{-| A movement delta from the drag start position. -}
+type alias Delta =
+    { x : Float
+    , y : Float
+    }
+
+
+{-| A bounding rectangle. -}
+type alias Rect =
+    { x : Float
+    , y : Float
+    , width : Float
+    , height : Float
+    }
+
+
+{-| A point with x and y coordinates. -}
+type alias Point =
+    { x : Float
+    , y : Float
+    }
+
+
+{-| Event emitted when a drag starts. -}
+type alias DragStart id =
+    { active : DragItem id
+    }
+
+
+{-| Event emitted when the dragged item moves over targets. -}
+type alias DragOver id =
+    { active : DragItem id
+    , over : Maybe (DropTarget id)
+    , delta : Delta
+    }
+
+
+{-| Event emitted when a drag ends (drop or cancel). -}
+type alias DragEnd id =
+    { active : DragItem id
+    , over : Maybe (DropTarget id)
+    }
+
+
+{-| Internal state for the drop-return animation.
+
+Tracks the item being animated back to its resting position along
+with the last known delta at the moment of release.
+-}
+type alias DropAnimState =
+    { item : { x : Float, y : Float }
+    , fromDelta : Delta
+    }
+
+
+{-| Internal messages for the drag-and-drop system. -}
+type Msg id
+    = StartDrag (DragItem id) Point
+    | MoveDrag Point
+    | DragOverTarget (DropTarget id)
+    | DragLeaveTarget
+    | EndDrag
+    | CancelDrag
+    | AnimationTick Float
+    | KeyboardMove Delta
+
+
+{-| Configuration for drag-and-drop behavior.
+
+  - `canDrop`: Optional predicate that determines whether a drag item
+    can be dropped on a target. When `Nothing`, type-based filtering
+    from `accept` is still applied. When `Just pred`, the predicate
+    is checked in addition to type-based filtering.
+-}
+type alias Config id =
+    { canDrop : Maybe (DragItem id -> DropTarget id -> Bool)
+    }
+
+
+{-| Default configuration with no custom drop predicate.
+
+Type-based filtering via `accept` on `DropTarget` is still active.
+-}
+defaultConfig : Config id
+defaultConfig =
+    { canDrop = Nothing
+    }
+
+
+{-| Check whether a drag item is accepted by a drop target.
+
+Checks both type-based `accept` filtering and the optional `canDrop`
+predicate from the config.
+-}
+isAccepted : Config id -> DragItem id -> DropTarget id -> Bool
+isAccepted config item target_ =
+    let
+        typeAccepted =
+            case target_.accept of
+                Nothing ->
+                    True
+
+                Just types ->
+                    List.member item.itemType types
+    in
+    if not typeAccepted then
+        False
+    else
+        case config.canDrop of
+            Nothing ->
+                True
+
+            Just pred ->
+                pred item target_
+
+
+{-| Initialize the drag-and-drop state. No drag operation is active.
+
+    init : State id
+-}
+init : State id
+init =
+    { operation = NotDragging
+    , announcement = ""
+    , dropAnim = Nothing
+    , liftProg = 0.0
+    }
+
+
+{-| Update the drag-and-drop state in response to a message.
+
+Returns the updated state along with any lifecycle events that occurred.
+The caller is responsible for mapping these events to their own messages.
+
+    update (MoveDrag point) state
+-}
+update : List (Modifier id) -> Rect -> Msg id -> State id -> State id
+update modifiers itemRect msg state =
+    updateWith defaultConfig modifiers itemRect msg state
+
+
+{-| Update with explicit configuration, including custom drop predicates.
+
+    updateWith myConfig modifiers itemRect (MoveDrag point) state
+-}
+updateWith : Config id -> List (Modifier id) -> Rect -> Msg id -> State id -> State id
+updateWith config modifiers itemRect msg state =
+    case msg of
+        StartDrag item point ->
+            { operation =
+                Dragging
+                    { item = item
+                    , current = point
+                    , delta = { x = 0, y = 0 }
+                    , over = Nothing
+                    }
+            , announcement = ""
+            , dropAnim = Nothing
+            , liftProg = 0.0
+            }
+
+        MoveDrag point ->
+            updateMove modifiers itemRect point state
+
+        DragOverTarget target_ ->
+            updateDragOverWith config target_ state
+
+        DragLeaveTarget ->
+            updateDragLeave state
+
+        EndDrag ->
+            endDragWithAnimation state
+
+        CancelDrag ->
+            { state
+                | operation = NotDragging
+                , announcement = ""
+                , dropAnim = Nothing
+                , liftProg = 0.0
+            }
+
+        AnimationTick dt ->
+            updateAnimationTick dt state
+
+        KeyboardMove delta ->
+            updateKeyboardMove modifiers itemRect delta state
+
+
+updateMove : List (Modifier id) -> Rect -> Point -> State id -> State id
+updateMove modifiers itemRect point state =
+    case state.operation of
+        NotDragging ->
+            state
+
+        Dragging drag ->
+            let
+                rawDelta =
+                    { x = point.x - drag.item.rect.x - (drag.item.rect.width / 2.0)
+                    , y = point.y - drag.item.rect.y - (drag.item.rect.height / 2.0)
+                    }
+
+                modifiedDelta =
+                    Modifier.applyModifiers modifiers itemRect rawDelta
+            in
+            { state
+                | operation =
+                    Dragging
+                        { drag
+                            | current = point
+                            , delta = modifiedDelta
+                        }
+            }
+
+
+updateDragOverWith : Config id -> DropTarget id -> State id -> State id
+updateDragOverWith config target_ state =
+    case state.operation of
+        NotDragging ->
+            state
+
+        Dragging drag ->
+            if isAccepted config drag.item target_ then
+                { state
+                    | operation =
+                        Dragging { drag | over = Just target_ }
+                }
+            else
+                state
+
+
+updateDragLeave : State id -> State id
+updateDragLeave state =
+    case state.operation of
+        NotDragging ->
+            state
+
+        Dragging drag ->
+            { state
+                | operation =
+                    Dragging { drag | over = Nothing }
+            }
+
+
+{-| Get the currently active drag operation, if any.
+
+    activeDrag state == Just { item = ..., current = ..., delta = ..., over = ... }
+-}
+activeDrag : State id -> Maybe (ActiveDrag id)
+activeDrag state =
+    case state.operation of
+        NotDragging ->
+            Nothing
+
+        Dragging drag ->
+            Just drag
+
+
+{-| Check if a specific item is currently being dragged.
+
+    isDragging "item-1" state == True
+-}
+isDragging : id -> State id -> Bool
+isDragging id state =
+    case state.operation of
+        NotDragging ->
+            False
+
+        Dragging drag ->
+            drag.item.id == id
+
+
+{-| Check if an item of a specific type is currently being dragged.
+
+    isDraggingType "card" state == True
+-}
+isDraggingType : String -> State id -> Bool
+isDraggingType itemType state =
+    case state.operation of
+        NotDragging ->
+            False
+
+        Dragging drag ->
+            drag.item.itemType == itemType
+
+
+{-| Get the drag delta if a drag is active.
+
+    dragDelta state == Just { x = 50.0, y = -20.0 }
+-}
+dragDelta : State id -> Maybe Delta
+dragDelta state =
+    case state.operation of
+        NotDragging ->
+            Nothing
+
+        Dragging drag ->
+            Just drag.delta
+
+
+{-| Get the current announcement string for screen readers.
+-}
+currentAnnouncement : State id -> String
+currentAnnouncement state =
+    state.announcement
+
+
+{-| Translate a rectangle by a delta.
+
+    translateRect { x = 10, y = 20 } { x = 100, y = 200, width = 50, height = 50 }
+    -- { x = 110, y = 220, width = 50, height = 50 }
+-}
+translateRect : Delta -> Rect -> Rect
+translateRect delta rect =
+    { x = rect.x + delta.x
+    , y = rect.y + delta.y
+    , width = rect.width
+    , height = rect.height
+    }
+
+
+{-| Get the current drop animation state, if a drop animation is running.
+
+Returns the animation state containing the position being animated from
+and the delta at the time of release. Use this with `DnD.Motion` to
+render the drop-return animation.
+-}
+dropAnimation : State id -> Maybe DropAnimState
+dropAnimation state =
+    state.dropAnim
+
+
+{-| Get the current lift progress (0.0 = resting, 1.0 = fully lifted).
+
+This value animates from 0.0 to 1.0 when a drag starts, enabling smooth
+lift effects like scaling and shadow elevation.
+-}
+liftProgress : State id -> Float
+liftProgress state =
+    state.liftProg
+
+
+{-| Check whether the state has any animation running (lift or drop).
+
+Returns True during lift-up animation or drop-return animation.
+Use this to determine whether animation frame subscriptions are needed.
+-}
+isAnimating : State id -> Bool
+isAnimating state =
+    case state.dropAnim of
+        Just _ ->
+            True
+
+        Nothing ->
+            case state.operation of
+                Dragging _ ->
+                    state.liftProg < 1.0
+
+                NotDragging ->
+                    False
+
+
+{-| Transition to drop animation on EndDrag, capturing the current delta. -}
+endDragWithAnimation : State id -> State id
+endDragWithAnimation state =
+    case state.operation of
+        NotDragging ->
+            state
+
+        Dragging drag ->
+            { state
+                | operation = NotDragging
+                , announcement = ""
+                , dropAnim =
+                    Just
+                        { item = { x = drag.item.rect.x, y = drag.item.rect.y }
+                        , fromDelta = drag.delta
+                        }
+                , liftProg = 0.0
+            }
+
+
+{-| Step animation timers: advance lift progress and drop animation.
+
+Lift progress moves toward 1.0 at a rate that completes in ~200ms.
+Drop animation progress is handled externally via DnD.Motion springs.
+When the drop animation delta reaches near-zero, clear the animation.
+-}
+updateAnimationTick : Float -> State id -> State id
+updateAnimationTick dt state =
+    let
+        newLiftProg =
+            case state.operation of
+                NotDragging ->
+                    state.liftProg
+
+                Dragging _ ->
+                    min 1.0 (state.liftProg + dt / 200.0)
+
+        newDropAnim =
+            case state.dropAnim of
+                Nothing ->
+                    Nothing
+
+                Just anim ->
+                    let
+                        decay =
+                            max 0 (1.0 - dt / 300.0)
+
+                        newDelta =
+                            { x = anim.fromDelta.x * decay
+                            , y = anim.fromDelta.y * decay
+                            }
+
+                        isSettled =
+                            abs newDelta.x < 0.5 && abs newDelta.y < 0.5
+                    in
+                    if isSettled then
+                        Nothing
+
+                    else
+                        Just { anim | fromDelta = newDelta }
+    in
+    { state
+        | liftProg = newLiftProg
+        , dropAnim = newDropAnim
+    }
+
+
+{-| Apply a keyboard movement delta as if it were a pointer move.
+
+Converts the keyboard delta into a point offset from the current position
+and delegates to the standard move logic.
+-}
+updateKeyboardMove : List (Modifier id) -> Rect -> Delta -> State id -> State id
+updateKeyboardMove modifiers itemRect delta state =
+    case state.operation of
+        NotDragging ->
+            state
+
+        Dragging drag ->
+            let
+                newPoint =
+                    { x = drag.current.x + delta.x
+                    , y = drag.current.y + delta.y
+                    }
+            in
+            updateMove modifiers itemRect newPoint state

@@ -1,0 +1,410 @@
+module DnD.Sortable.View exposing
+    ( SortableViewConfig
+    , InsertionIndicator(..)
+    , Direction(..)
+    , viewSortableList
+    , viewSortableItem
+    , viewInsertionIndicator
+    , viewPlaceholder
+    , defaultIndicator
+    , defaultDirection
+    )
+
+
+{-| Complete sortable list view with insertion indicators and placeholder rendering.
+
+Renders a sortable list container with items that can be reordered via
+drag-and-drop. Each item receives displacement transforms and lift styles
+while dragging, and insertion indicators show where the dragged item will
+land.
+
+The view layer is intentionally separated from the data layer (`DnD.Sortable`)
+so that applications can choose their own rendering strategy while reusing
+the same reorder logic.
+
+# Configuration
+@docs SortableViewConfig, InsertionIndicator, Direction
+
+# Views
+@docs viewSortableList, viewSortableItem, viewInsertionIndicator, viewPlaceholder
+
+# Defaults
+@docs defaultIndicator, defaultDirection
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Transition as Transition
+import Css.Value as Value
+import DnD exposing (State, DragOperation(..), Rect)
+import DnD.Motion exposing (LiftConfig, DisplacementConfig, liftStyles, displacementStyles)
+import DnD.Sortable exposing (Layout(..), SortableItemState, itemState)
+import Html exposing (Html, Attribute, div, text)
+import Html.Attributes exposing (attribute, id)
+
+
+{-| Configuration for rendering a sortable list.
+
+  - `layout`: Whether items are arranged vertically or horizontally.
+  - `toMsg`: Wraps internal `DnD.Msg` values into the application's message type.
+  - `itemId`: Extracts a unique string identifier from an item, used for
+    DOM attributes and keyed rendering.
+  - `indicator`: The visual style of the insertion indicator shown between
+    items during a drag.
+  - `lift`: Configuration for the lift animation (scale, shadow) applied
+    to the item being dragged.
+  - `displacement`: Configuration for how displaced items animate into
+    their shifted positions (duration, easing, stagger).
+  - `direction`: Text/layout direction, affecting horizontal indicator
+    placement.
+-}
+type alias SortableViewConfig id msg =
+    { layout : Layout
+    , toMsg : DnD.Msg id -> msg
+    , itemId : id -> String
+    , indicator : InsertionIndicator msg
+    , lift : LiftConfig
+    , displacement : DisplacementConfig
+    , direction : Direction
+    }
+
+
+{-| Visual style for the drop insertion indicator.
+
+  - `Line`: A colored line drawn between items. Specify the CSS color
+    string and thickness in pixels.
+  - `Gap`: An empty space opened between items to show where the dragged
+    item will land.
+  - `Custom`: A fully custom indicator rendered via a function that
+    receives the current `Direction` and returns Html. The `msg` type
+    parameter allows the custom indicator to produce events if needed.
+-}
+type InsertionIndicator msg
+    = Line { color : String, thickness : Float }
+    | Gap { size : Float }
+    | Custom (Direction -> Html msg)
+
+
+{-| Text/layout direction for horizontal indicator placement.
+
+  - `LTR`: Left-to-right (default for most Western languages).
+  - `RTL`: Right-to-left (Arabic, Hebrew, etc.).
+-}
+type Direction
+    = LTR
+    | RTL
+
+
+{-| Default insertion indicator: a 2px blue line (#2196F3).
+
+This matches the Material Design selection indicator color and provides
+clear visual feedback without being overly prominent.
+-}
+defaultIndicator : InsertionIndicator msg
+defaultIndicator =
+    Line { color = "#2196F3", thickness = 2 }
+
+
+{-| Default layout direction: left-to-right. -}
+defaultDirection : Direction
+defaultDirection =
+    LTR
+
+
+{-| Render a complete sortable list container with all items, insertion
+indicators, and placeholders.
+
+Creates a flex container (column for `Vertical`, row for `Horizontal`)
+and renders each item using `viewSortableItem`. When a drag is active
+and hovering over an item, an insertion indicator is shown at that
+position.
+
+The `renderItem` function receives an item id and should return the
+Html for that item's content. The surrounding sortable wrapper handles
+displacement, lift, and indicator rendering.
+
+    viewSortableList config model.dnd itemIds
+        (\itemId ->
+            div [ class "card" ] [ text (itemIdToString itemId) ]
+        )
+
+-}
+viewSortableList : SortableViewConfig id msg -> State id -> List id -> (id -> Html msg) -> Html msg
+viewSortableList config state items renderItem =
+    let
+        containerStyles =
+            containerStylesForLayout config.layout
+
+        renderedItems =
+            renderSortableItems config state items renderItem 0
+    in
+    div
+        [ Css.inlineStyle containerStyles ]
+        renderedItems
+
+
+{-| Build the list of rendered items, interleaving insertion indicators
+where the drag target is hovered.
+-}
+renderSortableItems : SortableViewConfig id msg -> State id -> List id -> (id -> Html msg) -> Int -> List (Html msg)
+renderSortableItems config state items renderItem index =
+    case items of
+        [] ->
+            []
+
+        itemId :: rest ->
+            let
+                iState =
+                    itemState state itemId
+
+                showIndicatorBefore =
+                    iState.isOver && not iState.isDragging
+
+                indicatorBefore =
+                    if showIndicatorBefore then
+                        [ viewInsertionIndicator config.indicator config.layout config.direction ]
+
+                    else
+                        []
+
+                itemView =
+                    if iState.isDragging then
+                        [ viewPlaceholder (draggedItemRect state)
+                        , viewSortableItem config state itemId [] [ renderItem itemId ]
+                        ]
+
+                    else
+                        [ viewSortableItem config state itemId [] [ renderItem itemId ] ]
+
+                restItems =
+                    renderSortableItems config state rest renderItem (index + 1)
+            in
+            indicatorBefore ++ itemView ++ restItems
+
+
+{-| Render a single sortable item with displacement transforms, lift
+styles, and data attributes.
+
+When the item is being dragged, it receives lift styles (scale, shadow,
+z-index) based on the current lift progress. When it is displaced by
+a nearby drag, it receives transition and transform styles that animate
+it into its shifted position.
+
+Additional attributes and children can be provided to customize the
+item's rendering beyond what the sortable wrapper adds.
+
+    viewSortableItem config model.dnd itemId
+        [ class "my-card" ]
+        [ text "Card content" ]
+
+-}
+viewSortableItem : SortableViewConfig id msg -> State id -> id -> List (Attribute msg) -> List (Html msg) -> Html msg
+viewSortableItem config state itemId extraAttrs children =
+    let
+        iState =
+            itemState state itemId
+
+        styles =
+            sortableItemStyles config iState state
+    in
+    div
+        ([ Css.inlineStyle styles
+         , attribute "data-sortable-id" (config.itemId itemId)
+         , id (config.itemId itemId)
+         ]
+            ++ extraAttrs
+        )
+        children
+
+
+{-| Render the visual drop indicator based on the chosen style.
+
+  - `Line`: A horizontal (for `Vertical` layout) or vertical (for
+    `Horizontal` layout) colored line.
+  - `Gap`: An empty spacer div of the configured size.
+  - `Custom`: Delegates to the user-provided rendering function.
+
+    viewInsertionIndicator defaultIndicator Vertical LTR
+
+-}
+viewInsertionIndicator : InsertionIndicator msg -> Layout -> Direction -> Html msg
+viewInsertionIndicator indicator layout direction =
+    case indicator of
+        Line lineConfig ->
+            viewLineIndicator lineConfig layout direction
+
+        Gap gapConfig ->
+            viewGapIndicator gapConfig layout
+
+        Custom renderFn ->
+            renderFn direction
+
+
+{-| Render a translucent placeholder where the dragged item was.
+
+The placeholder preserves the layout space of the original item so
+that siblings do not collapse while the item is being dragged. It
+renders as a div with the same dimensions as the original item's
+bounding rect, reduced to 20% opacity with a dashed border.
+
+    viewPlaceholder { x = 0, y = 0, width = 200, height = 60 }
+
+-}
+viewPlaceholder : Rect -> Html msg
+viewPlaceholder rect =
+    div
+        [ Css.inlineStyle
+            [ Css.width (Value.px rect.width)
+            , Css.height (Value.px rect.height)
+            , Css.opacity (Value.num 0.2)
+            , Css.border (Value.px 1) Value.dashed (Value.rgba 0 0 0 0.3)
+            , Css.borderRadius (Value.px 4)
+            , Css.boxSizing Value.borderBox
+            ]
+        ]
+        []
+
+
+
+-- INTERNAL HELPERS
+
+
+{-| Compute CSS styles for the sortable list container based on layout. -}
+containerStylesForLayout : Layout -> List Style
+containerStylesForLayout layout =
+    case layout of
+        Vertical ->
+            [ Css.display Value.flex_
+            , Css.flexDirection Value.column
+            , Css.position Value.relative
+            ]
+
+        Horizontal ->
+            [ Css.display Value.flex_
+            , Css.flexDirection Value.row
+            , Css.position Value.relative
+            ]
+
+
+{-| Compute CSS styles for a sortable item based on its visual state. -}
+sortableItemStyles : SortableViewConfig id msg -> SortableItemState -> State id -> List Style
+sortableItemStyles config iState state =
+    if iState.isDragging then
+        draggingItemStyles config state
+
+    else if iState.transformX /= 0 || iState.transformY /= 0 then
+        displacedItemStyles config iState
+
+    else
+        restingItemStyles
+
+
+{-| Styles for the item currently being dragged: lifted with scale and shadow. -}
+draggingItemStyles : SortableViewConfig id msg -> State id -> List Style
+draggingItemStyles config state =
+    let
+        progress =
+            DnD.liftProgress state
+    in
+    liftStyles config.lift progress
+        ++ [ Css.opacity (Value.num 0.0)
+           , Css.pointerEvents Value.none
+           , Css.position Value.relative
+           ]
+
+
+{-| Styles for items displaced by the dragged item. -}
+displacedItemStyles : SortableViewConfig id msg -> SortableItemState -> List Style
+displacedItemStyles config iState =
+    displacementStyles config.displacement 0
+        ++ [ Css.transform
+                [ Value.translate
+                    (Value.px iState.transformX)
+                    (Value.px iState.transformY)
+                ]
+           ]
+
+
+{-| Styles for items at rest (not dragging, not displaced). -}
+restingItemStyles : List Style
+restingItemStyles =
+    [ Css.position Value.relative
+    , Css.userSelect Value.none
+    ]
+
+
+{-| Render a line-style insertion indicator. -}
+viewLineIndicator : { color : String, thickness : Float } -> Layout -> Direction -> Html msg
+viewLineIndicator lineConfig layout direction =
+    case layout of
+        Vertical ->
+            div
+                [ Css.inlineStyle
+                    [ Css.height (Value.px lineConfig.thickness)
+                    , Css.width (Value.pct 100)
+                    , Css.backgroundColor (Value.unsafeValue lineConfig.color)
+                    , Css.borderRadius (Value.px (lineConfig.thickness / 2.0))
+                    , lineIndicatorMargin layout direction
+                    ]
+                ]
+                []
+
+        Horizontal ->
+            div
+                [ Css.inlineStyle
+                    [ Css.width (Value.px lineConfig.thickness)
+                    , Css.height (Value.pct 100)
+                    , Css.backgroundColor (Value.unsafeValue lineConfig.color)
+                    , Css.borderRadius (Value.px (lineConfig.thickness / 2.0))
+                    , lineIndicatorMargin layout direction
+                    ]
+                ]
+                []
+
+
+{-| Compute margin for a line indicator based on layout and direction. -}
+lineIndicatorMargin : Layout -> Direction -> Style
+lineIndicatorMargin layout _ =
+    case layout of
+        Vertical ->
+            Css.margin2 (Value.px 2) Value.zero
+
+        Horizontal ->
+            Css.margin2 Value.zero (Value.px 2)
+
+
+{-| Render a gap-style insertion indicator. -}
+viewGapIndicator : { size : Float } -> Layout -> Html msg
+viewGapIndicator gapConfig layout =
+    case layout of
+        Vertical ->
+            div
+                [ Css.inlineStyle
+                    [ Css.height (Value.px gapConfig.size)
+                    , Css.width (Value.pct 100)
+                    ]
+                ]
+                []
+
+        Horizontal ->
+            div
+                [ Css.inlineStyle
+                    [ Css.width (Value.px gapConfig.size)
+                    , Css.height (Value.pct 100)
+                    ]
+                ]
+                []
+
+
+{-| Extract the bounding rect of the currently dragged item, or a zero rect
+if no drag is active (used as a fallback for placeholder sizing).
+-}
+draggedItemRect : State id -> Rect
+draggedItemRect state =
+    case state.operation of
+        NotDragging ->
+            { x = 0, y = 0, width = 0, height = 0 }
+
+        Dragging drag ->
+            drag.item.rect

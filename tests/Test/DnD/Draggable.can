@@ -1,0 +1,128 @@
+module Test.DnD.Draggable exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import List
+import DnD
+import DnD.Draggable exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.Draggable"
+        [ draggableAttrsTests
+        , draggableAttrsWithInstructionsTests
+        , dragStylesTests
+        ]
+
+
+dummyRect : DnD.Rect
+dummyRect =
+    { x = 0, y = 0, width = 50, height = 50 }
+
+
+draggableAttrsTests : Test
+draggableAttrsTests =
+    describe "draggableAttrs"
+        [ test "returns non-empty attribute list" <|
+            \() ->
+                Expect.true "draggableAttrs should not be empty"
+                    (not (List.isEmpty draggableAttrs))
+        , test "returns multiple attributes" <|
+            \() ->
+                Expect.true "draggableAttrs should have several entries"
+                    (List.length draggableAttrs > 1)
+        ]
+
+
+draggableAttrsWithInstructionsTests : Test
+draggableAttrsWithInstructionsTests =
+    describe "draggableAttrsWithInstructions"
+        [ test "returns non-empty attribute list" <|
+            \() ->
+                Expect.true "should return attributes"
+                    (not (List.isEmpty (draggableAttrsWithInstructions "my-instructions")))
+        , test "returns same number of attributes as draggableAttrs" <|
+            \() ->
+                List.length (draggableAttrsWithInstructions "custom-id")
+                    |> Expect.equal (List.length draggableAttrs)
+        ]
+
+
+dragStylesTests : Test
+dragStylesTests =
+    describe "dragStyles"
+        [ test "returns empty list when not dragging" <|
+            \() ->
+                dragStyles DnD.init "item1"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "returns styles when dragging the matching item" <|
+            \() ->
+                let
+                    state =
+                        DnD.update [] dummyRect
+                            (DnD.StartDrag { id = "item1", rect = dummyRect, itemType = "" } { x = 10, y = 10 })
+                            DnD.init
+                in
+                dragStyles state "item1"
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns empty list for non-matching item" <|
+            \() ->
+                let
+                    state =
+                        DnD.update [] dummyRect
+                            (DnD.StartDrag { id = "item1", rect = dummyRect, itemType = "" } { x = 10, y = 10 })
+                            DnD.init
+                in
+                dragStyles state "item2"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "returns empty after drag ends" <|
+            \() ->
+                let
+                    state =
+                        DnD.update [] dummyRect
+                            (DnD.StartDrag { id = "item1", rect = dummyRect, itemType = "" } { x = 10, y = 10 })
+                            DnD.init
+
+                    ended =
+                        DnD.update [] dummyRect DnD.EndDrag state
+                in
+                dragStyles ended "item1"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "returns single attribute when matching" <|
+            \() ->
+                let
+                    state =
+                        DnD.update [] dummyRect
+                            (DnD.StartDrag { id = "x", rect = dummyRect, itemType = "" } { x = 0, y = 0 })
+                            DnD.init
+                in
+                dragStyles state "x"
+                    |> List.length
+                    |> Expect.equal 1
+        , test "returns empty after cancel" <|
+            \() ->
+                let
+                    state =
+                        DnD.update [] dummyRect
+                            (DnD.StartDrag { id = "item1", rect = dummyRect, itemType = "" } { x = 10, y = 10 })
+                            DnD.init
+
+                    cancelled =
+                        DnD.update [] dummyRect DnD.CancelDrag state
+                in
+                dragStyles cancelled "item1"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        ]

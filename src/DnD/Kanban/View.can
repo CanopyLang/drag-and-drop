@@ -1,0 +1,375 @@
+module DnD.Kanban.View exposing
+    ( KanbanViewConfig
+    , Direction(..)
+    , viewBoard
+    , viewColumn
+    , viewCard
+    , viewWipIndicator
+    )
+
+
+{-| Kanban board layout with columns, cards, empty states, and WIP indicators.
+
+Renders a horizontal board of columns, each containing a vertical list of
+draggable cards. Supports empty column placeholders, work-in-progress limit
+badges, and full drag-and-drop visual feedback.
+
+This module handles the visual representation while `DnD.Kanban` handles the
+data model and move logic, and `DnD.Sortable` provides item state computation.
+
+# Configuration
+@docs KanbanViewConfig, Direction
+
+# Views
+@docs viewBoard, viewColumn, viewCard, viewWipIndicator
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Transition as Transition
+import Css.Value as Value
+import DnD exposing (State, DragOperation(..))
+import DnD.Kanban exposing (Board, Column)
+import DnD.Sortable exposing (SortableItemState, itemState)
+import Html exposing (Html, Attribute, div, text, span)
+import Html.Attributes exposing (attribute, id)
+
+
+{-| Configuration for rendering a kanban board.
+
+  - `toMsg`: Wraps internal `DnD.Msg` values into the application's
+    message type.
+  - `columnId`: Extracts a unique string identifier from a column id,
+    used for DOM attributes.
+  - `cardId`: Extracts a unique string identifier from a card id,
+    used for DOM attributes and sortable state lookups.
+  - `renderCard`: Renders a single card given its id and current
+    sortable item state (isDragging, isOver, transforms). This is
+    where the application controls the card's visual appearance.
+  - `renderColumnHeader`: Renders a column's header given the full
+    `Column` record. Typically displays the column title and optionally
+    the WIP indicator.
+  - `emptyColumnView`: Renders the placeholder shown inside a column
+    when it contains no cards. Receives the column id for customization.
+  - `direction`: Text/layout direction affecting column ordering.
+-}
+type alias KanbanViewConfig columnId cardId msg =
+    { toMsg : DnD.Msg cardId -> msg
+    , columnId : columnId -> String
+    , cardId : cardId -> String
+    , renderCard : cardId -> SortableItemState -> Html msg
+    , renderColumnHeader : Column columnId cardId -> Html msg
+    , emptyColumnView : columnId -> Html msg
+    , direction : Direction
+    }
+
+
+{-| Text/layout direction for column ordering.
+
+  - `LTR`: Left-to-right — columns flow from left to right (default).
+  - `RTL`: Right-to-left — columns flow from right to left.
+-}
+type Direction
+    = LTR
+    | RTL
+
+
+{-| Render a complete kanban board with all columns.
+
+Creates a horizontal flex container holding each column side by side.
+The `direction` field in the config controls whether columns flow
+left-to-right or right-to-left. Each column is rendered using
+`viewColumn`.
+
+    viewBoard kanbanConfig model.dnd model.board
+
+-}
+viewBoard : KanbanViewConfig columnId cardId msg -> State cardId -> Board columnId cardId -> Html msg
+viewBoard config state board =
+    let
+        directionStyle =
+            boardDirectionStyle config.direction
+
+        columns =
+            List.map (\col -> viewColumn config state col) board.columns
+    in
+    div
+        [ Css.inlineStyle
+            [ Css.display Value.flex_
+            , Css.flexDirection Value.row
+            , directionStyle
+            , Css.alignItems Value.flexStart
+            , Css.gap (Value.px 16)
+            , Css.padding (Value.px 16)
+            , Css.minHeight (Value.px 200)
+            , Css.overflowX Value.auto
+            ]
+        ]
+        columns
+
+
+{-| Render a single kanban column with header, card list, and optional
+empty state.
+
+The column is rendered as a vertical flex container with:
+  1. The column header (via `renderColumnHeader`)
+  2. The WIP indicator (shown only when `wipLimit` is set)
+  3. Either the list of cards or the empty column placeholder
+
+Each card in the column is rendered via `viewCard` with its computed
+`SortableItemState` from the current drag state.
+
+    viewColumn kanbanConfig model.dnd todoColumn
+
+-}
+viewColumn : KanbanViewConfig columnId cardId msg -> State cardId -> Column columnId cardId -> Html msg
+viewColumn config state col =
+    let
+        headerView =
+            config.renderColumnHeader col
+
+        wipView =
+            viewWipIndicator col
+
+        cardViews =
+            if List.isEmpty col.cards then
+                [ config.emptyColumnView col.id ]
+
+            else
+                List.map (\cId -> viewCard config state cId) col.cards
+
+        isOverColumn =
+            columnHasHoveredCard state col
+    in
+    div
+        [ Css.inlineStyle (columnStyles isOverColumn)
+        , attribute "data-kanban-column" (config.columnId col.id)
+        , id (config.columnId col.id)
+        ]
+        [ headerView
+        , wipView
+        , div
+            [ Css.inlineStyle
+                [ Css.display Value.flex_
+                , Css.flexDirection Value.column
+                , Css.gap (Value.px 8)
+                , Css.flexGrow (Value.num 1)
+                , Css.overflowY Value.auto
+                , Css.padding (Value.px 8)
+                ]
+            ]
+            cardViews
+        ]
+
+
+{-| Render a single card using the config's `renderCard` function with
+the computed `SortableItemState`.
+
+The card is wrapped in a container that applies drag-related styles:
+  - When dragging, the card becomes translucent and non-interactive.
+  - When a dragged card hovers over this card, a subtle highlight appears.
+  - Transform offsets are applied for displacement animations.
+
+    viewCard kanbanConfig model.dnd "card-1"
+
+-}
+viewCard : KanbanViewConfig columnId cardId msg -> State cardId -> cardId -> Html msg
+viewCard config state cId =
+    let
+        iState =
+            itemState state cId
+
+        styles =
+            cardStyles iState
+    in
+    div
+        [ Css.inlineStyle styles
+        , attribute "data-kanban-card" (config.cardId cId)
+        , id (config.cardId cId)
+        ]
+        [ config.renderCard cId iState ]
+
+
+{-| Render a WIP (work-in-progress) indicator badge showing the current
+card count versus the column's WIP limit.
+
+When the column has a `wipLimit` of `Just n`, renders a badge like
+"3/5" showing current usage. The badge turns red when the column is at
+or over its limit. When `wipLimit` is `Nothing`, renders nothing (empty
+div).
+
+    viewWipIndicator todoColumn
+
+-}
+viewWipIndicator : Column columnId cardId -> Html msg
+viewWipIndicator col =
+    case col.wipLimit of
+        Nothing ->
+            div [] []
+
+        Just limit ->
+            let
+                currentCount =
+                    List.length col.cards
+
+                isOverLimit =
+                    currentCount >= limit
+
+                badgeColor =
+                    if isOverLimit then
+                        Value.rgb 211 47 47
+
+                    else
+                        Value.rgba 0 0 0 0.5
+
+                badgeBgColor =
+                    if isOverLimit then
+                        Value.rgba 211 47 47 0.1
+
+                    else
+                        Value.rgba 0 0 0 0.06
+
+                countText =
+                    String.fromInt currentCount
+                        ++ "/"
+                        ++ String.fromInt limit
+            in
+            div
+                [ Css.inlineStyle
+                    [ Css.display Value.inlineFlex
+                    , Css.alignItems Value.center
+                    , Css.justifyContent Value.center
+                    , Css.padding2 (Value.px 2) (Value.px 8)
+                    , Css.borderRadius (Value.px 10)
+                    , Css.fontSize (Value.px 12)
+                    , Css.fontWeight Value.bold
+                    , Css.color badgeColor
+                    , Css.backgroundColor badgeBgColor
+                    , Css.marginLeft (Value.px 8)
+                    , Css.flexShrink (Value.num 0)
+                    ]
+                ]
+                [ text countText ]
+
+
+
+-- INTERNAL HELPERS
+
+
+{-| Compute direction-related style for the board container. -}
+boardDirectionStyle : Direction -> Style
+boardDirectionStyle direction =
+    case direction of
+        LTR ->
+            Css.textDirection Value.ltr
+
+        RTL ->
+            Css.textDirection Value.rtl
+
+
+{-| Compute CSS styles for a kanban column container. -}
+columnStyles : Bool -> List Style
+columnStyles isOverColumn =
+    let
+        baseStyles =
+            [ Css.display Value.flex_
+            , Css.flexDirection Value.column
+            , Css.minWidth (Value.px 250)
+            , Css.maxWidth (Value.px 350)
+            , Css.width (Value.px 280)
+            , Css.backgroundColor (Value.rgb 245 245 245)
+            , Css.borderRadius (Value.px 8)
+            , Css.padding (Value.px 0)
+            , Css.minHeight (Value.px 100)
+            , Css.maxHeight (Value.pct 100)
+            , Css.flexShrink (Value.num 0)
+            ]
+
+        highlightStyles =
+            if isOverColumn then
+                [ Css.backgroundColor (Value.rgb 232 240 254)
+                , Css.boxShadow
+                    [ Value.shadow
+                        { offsetX = Value.px 0
+                        , offsetY = Value.px 0
+                        , blur = Value.px 0
+                        , spread = Value.px 2
+                        , color = Value.rgba 33 150 243 0.3
+                        , inset = True
+                        }
+                    ]
+                ]
+
+            else
+                []
+    in
+    baseStyles ++ highlightStyles
+
+
+{-| Compute CSS styles for a card container based on its sortable item state. -}
+cardStyles : SortableItemState -> List Style
+cardStyles iState =
+    let
+        baseStyles =
+            [ Css.position Value.relative
+            , Css.userSelect Value.none
+            , Transition.transitionProperty
+                "transform"
+                (Value.ms 200)
+                (Value.cubicBezier 0.2 0 0 1)
+                (Value.ms 0)
+            ]
+
+        dragStyles =
+            if iState.isDragging then
+                [ Css.opacity (Value.num 0.3)
+                , Css.pointerEvents Value.none
+                ]
+
+            else
+                []
+
+        hoverStyles =
+            if iState.isOver then
+                [ Css.transform
+                    [ Value.translate
+                        (Value.px 0)
+                        (Value.px 4)
+                    ]
+                ]
+
+            else
+                []
+
+        transformStyles =
+            if iState.transformX /= 0 || iState.transformY /= 0 then
+                [ Css.transform
+                    [ Value.translate
+                        (Value.px iState.transformX)
+                        (Value.px iState.transformY)
+                    ]
+                ]
+
+            else
+                []
+    in
+    baseStyles ++ dragStyles ++ hoverStyles ++ transformStyles
+
+
+{-| Check whether any card in a column is currently being hovered
+by a dragged item.
+-}
+columnHasHoveredCard : State cardId -> Column columnId cardId -> Bool
+columnHasHoveredCard state col =
+    hoveredCardId state
+        |> Maybe.map (\cId -> List.member cId col.cards)
+        |> Maybe.withDefault False
+
+
+{-| Extract the hovered card id from the drag state, if any. -}
+hoveredCardId : State cardId -> Maybe cardId
+hoveredCardId state =
+    DnD.activeDrag state
+        |> Maybe.andThen .over
+        |> Maybe.map .id

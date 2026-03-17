@@ -1,0 +1,465 @@
+module DnD.Tree.View exposing
+    ( TreeViewConfig
+    , Direction(..)
+    , viewTree
+    , viewTreeRow
+    , viewGuideLine
+    , viewDropIndicator
+    , viewExpandToggle
+    )
+
+
+{-| Tree view with indent guides, drop indicators, and expand/collapse toggles.
+
+Renders a tree structure as a flat list of rows with depth-based indentation,
+optional vertical guide lines connecting parent-child relationships, and
+visual drop indicators showing where a dragged node will land (Before,
+After, or Inside another node).
+
+This module handles the visual representation while `DnD.Tree` handles the
+data model, flattening, and move validation.
+
+# Configuration
+@docs TreeViewConfig, Direction
+
+# Views
+@docs viewTree, viewTreeRow, viewGuideLine, viewDropIndicator, viewExpandToggle
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Transition as Transition
+import Css.Value as Value
+import DnD exposing (State, DragOperation(..))
+import DnD.Tree exposing
+    ( TreeNode, FlatNode, TreeConfig, TreeNodeState
+    , DropPosition(..), flatten, nodeState
+    )
+import Html exposing (Html, Attribute, div, text, span, button)
+import Html.Attributes exposing (attribute, id)
+import Html.Events exposing (onClick)
+
+
+{-| Configuration for rendering a tree view.
+
+  - `toMsg`: Wraps internal `DnD.Msg` values into the application's
+    message type.
+  - `nodeId`: Extracts a unique string identifier from a node id,
+    used for DOM attributes and keyed rendering.
+  - `renderNode`: Renders a single node's content given its flattened
+    data and visual state. This function is responsible for the node's
+    label, icon, and any inline actions — the tree view handles
+    indentation, guide lines, and drop indicators around it.
+  - `config`: Tree configuration controlling max depth, auto-expand
+    delay, and indentation pixel width.
+  - `showGuideLines`: When True, vertical guide lines are drawn at
+    each depth level to visually connect parents to their children.
+  - `direction`: Text/layout direction affecting indentation side.
+-}
+type alias TreeViewConfig id msg =
+    { toMsg : DnD.Msg id -> msg
+    , nodeId : id -> String
+    , renderNode : FlatNode id -> TreeNodeState -> Html msg
+    , config : TreeConfig
+    , showGuideLines : Bool
+    , direction : Direction
+    }
+
+
+{-| Text/layout direction for indentation placement.
+
+  - `LTR`: Left-to-right — indentation and guide lines appear on the
+    left side.
+  - `RTL`: Right-to-left — indentation and guide lines appear on the
+    right side.
+-}
+type Direction
+    = LTR
+    | RTL
+
+
+{-| Render a complete tree as a flat list of rows.
+
+Flattens the tree using depth-first pre-order traversal (respecting
+collapsed nodes) and renders each resulting `FlatNode` as a row with
+indentation, optional guide lines, expand/collapse toggle, node content,
+and drop indicator.
+
+    viewTree treeViewConfig model.dnd rootNode
+
+-}
+viewTree : TreeViewConfig id msg -> State id -> TreeNode id -> Html msg
+viewTree config state root =
+    let
+        flatNodes =
+            flatten root
+
+        rows =
+            List.map (\flat -> viewTreeRow config state flat root) flatNodes
+    in
+    div
+        [ Css.inlineStyle
+            [ Css.display Value.flex_
+            , Css.flexDirection Value.column
+            , Css.position Value.relative
+            , Css.userSelect Value.none
+            ]
+        ]
+        rows
+
+
+{-| Render a single tree row with indentation, optional guide line,
+optional expand toggle, the node content, and a drop indicator.
+
+The row is indented by `depth * indentPx` pixels. If `showGuideLines`
+is enabled, a vertical guide line is drawn at the appropriate depth.
+Nodes with children get an expand/collapse toggle. The drop indicator
+appears when the node is a hover target during a drag.
+
+    viewTreeRow treeViewConfig model.dnd flatNode rootNode
+
+-}
+viewTreeRow : TreeViewConfig id msg -> State id -> FlatNode id -> TreeNode id -> Html msg
+viewTreeRow config state flat root =
+    let
+        dragContext =
+            buildDragContext state
+
+        nState =
+            nodeState dragContext flat root
+
+        indentPx =
+            config.config.indentPx
+
+        indentValue =
+            toFloat flat.depth * indentPx
+
+        rowStyles =
+            treeRowStyles nState
+
+        indentStyles =
+            indentStylesForDirection config.direction indentValue
+
+        guideLine =
+            if config.showGuideLines && flat.depth > 0 then
+                [ viewGuideLine indentPx flat.depth flat.isLastChild ]
+
+            else
+                []
+
+        toggle =
+            if flat.hasChildren then
+                [ viewExpandToggleInternal config flat ]
+
+            else
+                [ viewToggleSpacer indentPx ]
+
+        nodeContent =
+            [ div
+                [ Css.inlineStyle
+                    [ Css.flexGrow (Value.num 1)
+                    , Css.minWidth (Value.px 0)
+                    ]
+                ]
+                [ config.renderNode flat nState ]
+            ]
+
+        dropInd =
+            viewDropIndicatorForState nState indentPx flat.depth
+    in
+    div
+        [ Css.inlineStyle (rowStyles ++ indentStyles)
+        , attribute "data-tree-node-id" (config.nodeId flat.id)
+        , id (config.nodeId flat.id)
+        , attribute "data-tree-depth" (String.fromInt flat.depth)
+        ]
+        (guideLine ++ toggle ++ nodeContent ++ dropInd)
+
+
+{-| Render a vertical guide line at a given depth level.
+
+The guide line is positioned at `depth * indentPx` pixels from the
+indentation edge. It extends the full height of the row plus a small
+overlap to connect with the next row's guide line. When `isLastChild`
+is True, the line only extends halfway down to terminate at the last
+sibling.
+
+    viewGuideLine 24.0 2 False
+
+-}
+viewGuideLine : Float -> Int -> Bool -> Html msg
+viewGuideLine indentPx depth isLastChild =
+    let
+        leftOffset =
+            toFloat (depth - 1) * indentPx + (indentPx / 2.0)
+
+        heightStyle =
+            if isLastChild then
+                Css.height (Value.pct 50)
+
+            else
+                Css.height (Value.pct 100)
+    in
+    div
+        [ Css.inlineStyle
+            [ Css.position Value.absolute
+            , Css.left (Value.px leftOffset)
+            , Css.top (Value.px 0)
+            , Css.width (Value.px 1)
+            , heightStyle
+            , Css.backgroundColor (Value.rgba 0 0 0 0.15)
+            , Css.pointerEvents Value.none
+            ]
+        ]
+        []
+
+
+{-| Render a drop indicator showing where a dragged node will land.
+
+The indicator's appearance depends on the `DropPosition`:
+
+  - `Before`: A horizontal line above the target row at the correct
+    indent level.
+  - `After`: A horizontal line below the target row at the correct
+    indent level.
+  - `Inside`: A highlighted background on the target row indicating
+    the dragged node will become a child.
+
+    viewDropIndicator Before 24.0 2
+
+-}
+viewDropIndicator : DropPosition -> Float -> Int -> Html msg
+viewDropIndicator position indentPx depth =
+    let
+        leftOffset =
+            toFloat depth * indentPx
+    in
+    case position of
+        Before ->
+            div
+                [ Css.inlineStyle
+                    [ Css.position Value.absolute
+                    , Css.top (Value.px 0)
+                    , Css.left (Value.px leftOffset)
+                    , Css.right (Value.px 0)
+                    , Css.height (Value.px 2)
+                    , Css.backgroundColor (Value.unsafeValue "#2196F3")
+                    , Css.borderRadius (Value.px 1)
+                    , Css.pointerEvents Value.none
+                    , Css.zIndex (Value.int_ 10)
+                    ]
+                ]
+                []
+
+        After ->
+            div
+                [ Css.inlineStyle
+                    [ Css.position Value.absolute
+                    , Css.bottom (Value.px 0)
+                    , Css.left (Value.px leftOffset)
+                    , Css.right (Value.px 0)
+                    , Css.height (Value.px 2)
+                    , Css.backgroundColor (Value.unsafeValue "#2196F3")
+                    , Css.borderRadius (Value.px 1)
+                    , Css.pointerEvents Value.none
+                    , Css.zIndex (Value.int_ 10)
+                    ]
+                ]
+                []
+
+        Inside ->
+            div
+                [ Css.inlineStyle
+                    [ Css.position Value.absolute
+                    , Css.top (Value.px 0)
+                    , Css.left (Value.px leftOffset)
+                    , Css.right (Value.px 0)
+                    , Css.bottom (Value.px 0)
+                    , Css.backgroundColor (Value.rgba 33 150 243 0.1)
+                    , Css.border (Value.px 2) Value.dashed (Value.unsafeValue "#2196F3")
+                    , Css.borderRadius (Value.px 4)
+                    , Css.pointerEvents Value.none
+                    , Css.zIndex (Value.int_ 10)
+                    ]
+                ]
+                []
+
+
+{-| Render an expand/collapse arrow button for tree nodes with children.
+
+When the node is expanded, the arrow points downward. When collapsed,
+the arrow points to the right (or left for RTL). Clicking the button
+fires the provided message with the node's id.
+
+    viewExpandToggle ToggleExpand flatNode
+
+-}
+viewExpandToggle : (id -> msg) -> FlatNode id -> Html msg
+viewExpandToggle onToggle flat =
+    let
+        arrowChar =
+            if flat.isExpanded then
+                "▾"
+
+            else
+                "▸"
+    in
+    button
+        [ onClick (onToggle flat.id)
+        , Css.inlineStyle
+            [ Css.width (Value.px 20)
+            , Css.height (Value.px 20)
+            , Css.display Value.inlineFlex
+            , Css.alignItems Value.center
+            , Css.justifyContent Value.center
+            , Css.border (Value.px 0) Value.solid (Value.rgba 0 0 0 0)
+            , Css.backgroundColor (Value.rgba 0 0 0 0)
+            , Css.cursor Value.pointer
+            , Css.padding (Value.px 0)
+            , Css.fontSize (Value.px 12)
+            , Css.color (Value.rgba 0 0 0 0.6)
+            , Css.userSelect Value.none
+            , Css.flexShrink (Value.num 0)
+            ]
+        , attribute "aria-expanded" (boolToString flat.isExpanded)
+        , attribute "aria-label"
+            (if flat.isExpanded then "Collapse" else "Expand")
+        ]
+        [ text arrowChar ]
+
+
+
+-- INTERNAL HELPERS
+
+
+{-| Build the drag context record needed by DnD.Tree.nodeState from
+the current DnD state.
+-}
+buildDragContext : State id -> { draggedId : Maybe id, overId : Maybe id, dropPosition : Maybe DropPosition }
+buildDragContext state =
+    case state.operation of
+        NotDragging ->
+            { draggedId = Nothing
+            , overId = Nothing
+            , dropPosition = Nothing
+            }
+
+        Dragging drag ->
+            { draggedId = Just drag.item.id
+            , overId = Maybe.map .id drag.over
+            , dropPosition = Nothing
+            }
+
+
+{-| Compute CSS styles for a tree row based on its visual state. -}
+treeRowStyles : TreeNodeState -> List Style
+treeRowStyles nState =
+    let
+        baseStyles =
+            [ Css.display Value.flex_
+            , Css.flexDirection Value.row
+            , Css.alignItems Value.center
+            , Css.position Value.relative
+            , Css.minHeight (Value.px 32)
+            ]
+
+        dragStyles =
+            if nState.isDragging then
+                [ Css.opacity (Value.num 0.4) ]
+
+            else if nState.isAncestorOfDragged then
+                [ Css.opacity (Value.num 0.6) ]
+
+            else
+                []
+
+        hoverStyles =
+            if nState.isOver then
+                [ Css.backgroundColor (Value.rgba 0 0 0 0.04) ]
+
+            else
+                []
+    in
+    baseStyles ++ dragStyles ++ hoverStyles
+
+
+{-| Compute indentation styles based on direction and indent value. -}
+indentStylesForDirection : Direction -> Float -> List Style
+indentStylesForDirection direction indentValue =
+    case direction of
+        LTR ->
+            [ Css.paddingLeft (Value.px indentValue) ]
+
+        RTL ->
+            [ Css.paddingRight (Value.px indentValue) ]
+
+
+{-| Render the expand toggle using the tree view config's toMsg wrapper. -}
+viewExpandToggleInternal : TreeViewConfig id msg -> FlatNode id -> Html msg
+viewExpandToggleInternal config flat =
+    let
+        arrowChar =
+            if flat.isExpanded then
+                "▾"
+
+            else
+                "▸"
+    in
+    button
+        [ Css.inlineStyle
+            [ Css.width (Value.px 20)
+            , Css.height (Value.px 20)
+            , Css.display Value.inlineFlex
+            , Css.alignItems Value.center
+            , Css.justifyContent Value.center
+            , Css.border (Value.px 0) Value.solid (Value.rgba 0 0 0 0)
+            , Css.backgroundColor (Value.rgba 0 0 0 0)
+            , Css.cursor Value.pointer
+            , Css.padding (Value.px 0)
+            , Css.fontSize (Value.px 12)
+            , Css.color (Value.rgba 0 0 0 0.6)
+            , Css.userSelect Value.none
+            , Css.flexShrink (Value.num 0)
+            ]
+        , attribute "aria-expanded" (boolToString flat.isExpanded)
+        , attribute "aria-label"
+            (if flat.isExpanded then "Collapse" else "Expand")
+        ]
+        [ text arrowChar ]
+
+
+{-| Render a spacer the same width as the expand toggle, used for
+leaf nodes to maintain consistent indentation alignment.
+-}
+viewToggleSpacer : Float -> Html msg
+viewToggleSpacer indentPx =
+    div
+        [ Css.inlineStyle
+            [ Css.width (Value.px 20)
+            , Css.height (Value.px 20)
+            , Css.flexShrink (Value.num 0)
+            ]
+        ]
+        []
+
+
+{-| Conditionally render a drop indicator based on the node's visual state. -}
+viewDropIndicatorForState : TreeNodeState -> Float -> Int -> List (Html msg)
+viewDropIndicatorForState nState indentPx depth =
+    case nState.dropPosition of
+        Nothing ->
+            []
+
+        Just position ->
+            [ viewDropIndicator position indentPx depth ]
+
+
+{-| Convert a Bool to the string "true" or "false" for ARIA attributes. -}
+boolToString : Bool -> String
+boolToString b =
+    if b then
+        "true"
+
+    else
+        "false"

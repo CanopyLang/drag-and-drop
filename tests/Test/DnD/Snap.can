@@ -1,0 +1,363 @@
+module Test.DnD.Snap exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD exposing (Rect, Delta)
+import DnD.Snap exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.Snap"
+        [ snapPointsTests
+        , detectSnapNoTargetsTests
+        , detectSnapGridTests
+        , detectSnapElementTests
+        , adjustDeltaTests
+        , defaultConfigTests
+        , detectSnapCoordinatesTests
+        ]
+
+
+sampleRect : Rect
+sampleRect =
+    { x = 10, y = 20, width = 100, height = 50 }
+
+
+zeroDelta : Delta
+zeroDelta =
+    { x = 0, y = 0 }
+
+
+snapPointsTests : Test
+snapPointsTests =
+    describe "snapPoints"
+        [ test "returns three x snap points" <|
+            \() ->
+                (snapPoints sampleRect).xs
+                    |> List.length
+                    |> Expect.equal 3
+        , test "returns three y snap points" <|
+            \() ->
+                (snapPoints sampleRect).ys
+                    |> List.length
+                    |> Expect.equal 3
+        , test "returns 6 total snap points" <|
+            \() ->
+                let
+                    pts =
+                        snapPoints sampleRect
+                in
+                List.length pts.xs + List.length pts.ys
+                    |> Expect.equal 6
+        , test "x snap points are left, center, right" <|
+            \() ->
+                (snapPoints sampleRect).xs
+                    |> Expect.equal [ 10, 60, 110 ]
+        , test "y snap points are top, center, bottom" <|
+            \() ->
+                (snapPoints sampleRect).ys
+                    |> Expect.equal [ 20, 45, 70 ]
+        , test "works with zero-size rect" <|
+            \() ->
+                let
+                    zeroRect =
+                        { x = 5, y = 10, width = 0, height = 0 }
+
+                    pts =
+                        snapPoints zeroRect
+                in
+                pts.xs
+                    |> Expect.equal [ 5, 5, 5 ]
+        ]
+
+
+detectSnapNoTargetsTests : Test
+detectSnapNoTargetsTests =
+    describe "detectSnap with no targets"
+        [ test "returns unchanged delta" <|
+            \() ->
+                let
+                    config =
+                        { targets = []
+                        , threshold = 5.0
+                        , showGuides = True
+                        }
+
+                    delta =
+                        { x = 10, y = 15 }
+
+                    result =
+                        detectSnap config sampleRect delta
+                in
+                result.adjustedDelta
+                    |> Expect.equal delta
+        , test "snappedX is False" <|
+            \() ->
+                let
+                    config =
+                        { targets = []
+                        , threshold = 5.0
+                        , showGuides = True
+                        }
+
+                    result =
+                        detectSnap config sampleRect { x = 10, y = 15 }
+                in
+                result.snappedX
+                    |> Expect.equal False
+        , test "snappedY is False" <|
+            \() ->
+                let
+                    config =
+                        { targets = []
+                        , threshold = 5.0
+                        , showGuides = True
+                        }
+
+                    result =
+                        detectSnap config sampleRect { x = 10, y = 15 }
+                in
+                result.snappedY
+                    |> Expect.equal False
+        , test "guides is empty" <|
+            \() ->
+                let
+                    config =
+                        { targets = []
+                        , threshold = 5.0
+                        , showGuides = True
+                        }
+
+                    result =
+                        detectSnap config sampleRect { x = 10, y = 15 }
+                in
+                result.guides
+                    |> Expect.equal []
+        ]
+
+
+detectSnapGridTests : Test
+detectSnapGridTests =
+    describe "detectSnap with grid"
+        [ test "snaps to nearest grid line on x axis" <|
+            \() ->
+                let
+                    rect =
+                        { x = 0, y = 0, width = 20, height = 20 }
+
+                    config =
+                        { targets = [ SnapToGrid { x = 50, y = 50 } ]
+                        , threshold = 10.0
+                        , showGuides = True
+                        }
+
+                    delta =
+                        { x = 48, y = 48 }
+
+                    result =
+                        detectSnap config rect delta
+                in
+                result.snappedX
+                    |> Expect.equal True
+        , test "snaps to nearest grid line on y axis" <|
+            \() ->
+                let
+                    rect =
+                        { x = 0, y = 0, width = 20, height = 20 }
+
+                    config =
+                        { targets = [ SnapToGrid { x = 50, y = 50 } ]
+                        , threshold = 10.0
+                        , showGuides = True
+                        }
+
+                    delta =
+                        { x = 48, y = 48 }
+
+                    result =
+                        detectSnap config rect delta
+                in
+                result.snappedY
+                    |> Expect.equal True
+        , test "does not snap when beyond threshold" <|
+            \() ->
+                let
+                    rect =
+                        { x = 0, y = 0, width = 20, height = 20 }
+
+                    config =
+                        { targets = [ SnapToGrid { x = 100, y = 100 } ]
+                        , threshold = 3.0
+                        , showGuides = True
+                        }
+
+                    delta =
+                        { x = 35, y = 35 }
+
+                    result =
+                        detectSnap config rect delta
+                in
+                result.snappedX
+                    |> Expect.equal False
+        ]
+
+
+detectSnapElementTests : Test
+detectSnapElementTests =
+    describe "detectSnap with element target"
+        [ test "snaps when dragged edge aligns within threshold" <|
+            \() ->
+                let
+                    dragRect =
+                        { x = 0, y = 0, width = 40, height = 40 }
+
+                    targetRect =
+                        { x = 100, y = 0, width = 60, height = 60 }
+
+                    config =
+                        { targets = [ SnapToElement "target" targetRect ]
+                        , threshold = 5.0
+                        , showGuides = True
+                        }
+
+                    delta =
+                        { x = 98, y = 0 }
+
+                    result =
+                        detectSnap config dragRect delta
+                in
+                result.snappedX
+                    |> Expect.equal True
+        , test "produces guide lines when snapping" <|
+            \() ->
+                let
+                    dragRect =
+                        { x = 0, y = 0, width = 40, height = 40 }
+
+                    targetRect =
+                        { x = 100, y = 0, width = 60, height = 60 }
+
+                    config =
+                        { targets = [ SnapToElement "target" targetRect ]
+                        , threshold = 5.0
+                        , showGuides = True
+                        }
+
+                    delta =
+                        { x = 98, y = 0 }
+
+                    result =
+                        detectSnap config dragRect delta
+                in
+                List.isEmpty result.guides
+                    |> Expect.equal False
+        ]
+
+
+adjustDeltaTests : Test
+adjustDeltaTests =
+    describe "adjustDelta"
+        [ test "returns same as detectSnap adjustedDelta" <|
+            \() ->
+                let
+                    config =
+                        { targets = [ SnapToGrid { x = 50, y = 50 } ]
+                        , threshold = 10.0
+                        , showGuides = True
+                        }
+
+                    rect =
+                        { x = 0, y = 0, width = 20, height = 20 }
+
+                    delta =
+                        { x = 48, y = 48 }
+                in
+                adjustDelta config rect delta
+                    |> Expect.equal (detectSnap config rect delta).adjustedDelta
+        , test "no targets returns original delta" <|
+            \() ->
+                let
+                    config =
+                        { targets = []
+                        , threshold = 5.0
+                        , showGuides = True
+                        }
+
+                    delta =
+                        { x = 23, y = 47 }
+                in
+                adjustDelta config sampleRect delta
+                    |> Expect.equal delta
+        ]
+
+
+defaultConfigTests : Test
+defaultConfigTests =
+    describe "defaultConfig"
+        [ test "has no targets" <|
+            \() ->
+                defaultConfig.targets
+                    |> Expect.equal []
+        , test "has 5.0 threshold" <|
+            \() ->
+                defaultConfig.threshold
+                    |> Expect.equal 5.0
+        , test "showGuides is True" <|
+            \() ->
+                defaultConfig.showGuides
+                    |> Expect.equal True
+        ]
+
+
+detectSnapCoordinatesTests : Test
+detectSnapCoordinatesTests =
+    describe "detectSnap with coordinates"
+        [ test "snaps to explicit x coordinate" <|
+            \() ->
+                let
+                    rect =
+                        { x = 0, y = 0, width = 20, height = 20 }
+
+                    config =
+                        { targets = [ SnapToCoordinates [ 50, 100, 150 ] [ 50, 100 ] ]
+                        , threshold = 5.0
+                        , showGuides = True
+                        }
+
+                    delta =
+                        { x = 48, y = 0 }
+
+                    result =
+                        detectSnap config rect delta
+                in
+                result.snappedX
+                    |> Expect.equal True
+        , test "does not snap when far from all coordinates" <|
+            \() ->
+                let
+                    rect =
+                        { x = 0, y = 0, width = 20, height = 20 }
+
+                    config =
+                        { targets = [ SnapToCoordinates [ 200, 300 ] [ 200, 300 ] ]
+                        , threshold = 3.0
+                        , showGuides = True
+                        }
+
+                    delta =
+                        { x = 50, y = 50 }
+
+                    result =
+                        detectSnap config rect delta
+                in
+                result.snappedX
+                    |> Expect.equal False
+        ]

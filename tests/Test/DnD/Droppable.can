@@ -1,0 +1,165 @@
+module Test.DnD.Droppable exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD exposing (..)
+import DnD.Droppable exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.Droppable"
+        [ droppableAttrsTests
+        , isOverTests
+        , isAcceptedTests
+        , activeStylesTests
+        , rejectedStylesTests
+        ]
+
+
+dummyRect : DnD.Rect
+dummyRect =
+    { x = 0, y = 0, width = 50, height = 50 }
+
+
+notDraggingState : DnD.State String
+notDraggingState =
+    DnD.init
+
+
+draggingOverState : String -> DnD.State String
+draggingOverState targetId =
+    { operation =
+        DnD.Dragging
+            { item = { id = "dragged-item", rect = dummyRect, itemType = "card" }
+            , current = { x = 25, y = 25 }
+            , delta = { x = 0, y = 0 }
+            , over =
+                Just
+                    { id = targetId
+                    , rect = dummyRect
+                    , accept = Nothing
+                    }
+            }
+    , announcement = ""
+    , dropAnim = Nothing
+    , liftProg = 0.0
+    }
+
+
+draggingNoOverState : DnD.State String
+draggingNoOverState =
+    { operation =
+        DnD.Dragging
+            { item = { id = "dragged-item", rect = dummyRect, itemType = "card" }
+            , current = { x = 25, y = 25 }
+            , delta = { x = 0, y = 0 }
+            , over = Nothing
+            }
+    , announcement = ""
+    , dropAnim = Nothing
+    , liftProg = 0.0
+    }
+
+
+droppableAttrsTests : Test
+droppableAttrsTests =
+    describe "droppableAttrs"
+        [ test "returns a non-empty list of attributes" <|
+            \() ->
+                List.isEmpty droppableAttrs
+                    |> Expect.equal False
+        , test "returns exactly one attribute" <|
+            \() ->
+                List.length droppableAttrs
+                    |> Expect.equal 1
+        ]
+
+
+isOverTests : Test
+isOverTests =
+    describe "isOver"
+        [ test "returns False when not dragging" <|
+            \() ->
+                isOver "zone-1" notDraggingState
+                    |> Expect.equal False
+        , test "returns True when dragging over correct target" <|
+            \() ->
+                isOver "zone-1" (draggingOverState "zone-1")
+                    |> Expect.equal True
+        , test "returns False when dragging over different target" <|
+            \() ->
+                isOver "zone-2" (draggingOverState "zone-1")
+                    |> Expect.equal False
+        , test "returns False when dragging but not over any target" <|
+            \() ->
+                isOver "zone-1" draggingNoOverState
+                    |> Expect.equal False
+        ]
+
+
+isAcceptedTests : Test
+isAcceptedTests =
+    describe "isAccepted"
+        [ test "returns False when not dragging" <|
+            \() ->
+                DnD.Droppable.isAccepted "zone-1" [ "card" ] notDraggingState
+                    |> Expect.equal False
+        , test "returns True when item type matches accept list" <|
+            \() ->
+                DnD.Droppable.isAccepted "zone-1" [ "card", "task" ] (draggingOverState "zone-1")
+                    |> Expect.equal True
+        , test "returns False when item type not in accept list" <|
+            \() ->
+                DnD.Droppable.isAccepted "zone-1" [ "image", "file" ] (draggingOverState "zone-1")
+                    |> Expect.equal False
+        ]
+
+
+activeStylesTests : Test
+activeStylesTests =
+    describe "activeStyles"
+        [ test "returns empty list when not over target" <|
+            \() ->
+                activeStyles notDraggingState "zone-1"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "returns non-empty list when over target" <|
+            \() ->
+                activeStyles (draggingOverState "zone-1") "zone-1"
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns empty list when over different target" <|
+            \() ->
+                activeStyles (draggingOverState "zone-1") "zone-2"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        ]
+
+
+rejectedStylesTests : Test
+rejectedStylesTests =
+    describe "rejectedStyles"
+        [ test "returns empty list when not dragging" <|
+            \() ->
+                rejectedStyles notDraggingState "zone-1" [ "card" ]
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "returns non-empty when item type is rejected" <|
+            \() ->
+                rejectedStyles (draggingOverState "zone-1") "zone-1" [ "image", "file" ]
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns empty when item type is accepted" <|
+            \() ->
+                rejectedStyles (draggingOverState "zone-1") "zone-1" [ "card", "task" ]
+                    |> List.isEmpty
+                    |> Expect.equal True
+        ]

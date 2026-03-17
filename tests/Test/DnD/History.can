@@ -1,0 +1,308 @@
+module Test.DnD.History exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD.History exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.History"
+        [ initTests
+        , pushTests
+        , undoTests
+        , redoTests
+        , undoThenNewActionTests
+        , canUndoRedoTests
+        , withMaxSizeTests
+        , pushBatchTests
+        , clearTests
+        , toListTests
+        ]
+
+
+initTests : Test
+initTests =
+    describe "init"
+        [ test "creates history with given present" <|
+            \() ->
+                current (init 42)
+                    |> Expect.equal 42
+        , test "canUndo is False on init" <|
+            \() ->
+                canUndo (init 1)
+                    |> Expect.equal False
+        , test "canRedo is False on init" <|
+            \() ->
+                canRedo (init 1)
+                    |> Expect.equal False
+        ]
+
+
+pushTests : Test
+pushTests =
+    describe "push"
+        [ test "new value becomes present" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> current
+                    |> Expect.equal 2
+        , test "push enables undo" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> canUndo
+                    |> Expect.equal True
+        , test "undoCount is 1 after one push" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> undoCount
+                    |> Expect.equal 1
+        ]
+
+
+undoTests : Test
+undoTests =
+    describe "undo"
+        [ test "restores previous state" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> undo
+                    |> current
+                    |> Expect.equal 1
+        , test "undo on init is no-op" <|
+            \() ->
+                init 1
+                    |> undo
+                    |> current
+                    |> Expect.equal 1
+        , test "undo enables redo" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> undo
+                    |> canRedo
+                    |> Expect.equal True
+        , test "multiple undos go back through history" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> push 3
+                    |> undo
+                    |> undo
+                    |> current
+                    |> Expect.equal 1
+        ]
+
+
+redoTests : Test
+redoTests =
+    describe "redo"
+        [ test "restores undone state" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> undo
+                    |> redo
+                    |> current
+                    |> Expect.equal 2
+        , test "redo on init is no-op" <|
+            \() ->
+                init 1
+                    |> redo
+                    |> current
+                    |> Expect.equal 1
+        , test "redo without undo is no-op" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> redo
+                    |> current
+                    |> Expect.equal 2
+        , test "multiple redo after multiple undo" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> push 3
+                    |> undo
+                    |> undo
+                    |> redo
+                    |> redo
+                    |> current
+                    |> Expect.equal 3
+        ]
+
+
+undoThenNewActionTests : Test
+undoThenNewActionTests =
+    describe "undo then new action"
+        [ test "clears future on push after undo" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> push 3
+                    |> undo
+                    |> push 4
+                    |> canRedo
+                    |> Expect.equal False
+        , test "present is the new value" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> undo
+                    |> push 5
+                    |> current
+                    |> Expect.equal 5
+        ]
+
+
+canUndoRedoTests : Test
+canUndoRedoTests =
+    describe "canUndo/canRedo"
+        [ test "canUndo False initially" <|
+            \() ->
+                canUndo (init 1) |> Expect.equal False
+        , test "canRedo False initially" <|
+            \() ->
+                canRedo (init 1) |> Expect.equal False
+        , test "canUndo True after push" <|
+            \() ->
+                init 1 |> push 2 |> canUndo |> Expect.equal True
+        , test "undoCount matches pushes" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> push 3
+                    |> undoCount
+                    |> Expect.equal 2
+        , test "redoCount matches undos" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> push 3
+                    |> undo
+                    |> redoCount
+                    |> Expect.equal 1
+        ]
+
+
+withMaxSizeTests : Test
+withMaxSizeTests =
+    describe "withMaxSize"
+        [ test "trims past to max size" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> push 3
+                    |> push 4
+                    |> push 5
+                    |> withMaxSize 2
+                    |> undoCount
+                    |> Expect.equal 2
+        , test "subsequent pushes respect max size" <|
+            \() ->
+                init 1
+                    |> withMaxSize 2
+                    |> push 2
+                    |> push 3
+                    |> push 4
+                    |> undoCount
+                    |> Expect.equal 2
+        , test "maxSize clamped to at least 1" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> push 3
+                    |> withMaxSize 0
+                    |> undoCount
+                    |> Expect.equal 1
+        ]
+
+
+pushBatchTests : Test
+pushBatchTests =
+    describe "pushBatch"
+        [ test "last element becomes present" <|
+            \() ->
+                init 1
+                    |> pushBatch [ 2, 3, 4 ]
+                    |> current
+                    |> Expect.equal 4
+        , test "each push is an undo step" <|
+            \() ->
+                init 1
+                    |> pushBatch [ 2, 3, 4 ]
+                    |> undoCount
+                    |> Expect.equal 3
+        , test "empty batch is no-op" <|
+            \() ->
+                init 1
+                    |> pushBatch []
+                    |> current
+                    |> Expect.equal 1
+        ]
+
+
+clearTests : Test
+clearTests =
+    describe "clear"
+        [ test "keeps present" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> push 3
+                    |> clear
+                    |> current
+                    |> Expect.equal 3
+        , test "clears past" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> push 3
+                    |> clear
+                    |> canUndo
+                    |> Expect.equal False
+        , test "clears future" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> undo
+                    |> clear
+                    |> canRedo
+                    |> Expect.equal False
+        ]
+
+
+toListTests : Test
+toListTests =
+    describe "toList"
+        [ test "init produces singleton" <|
+            \() ->
+                toList (init 1)
+                    |> Expect.equal [ 1 ]
+        , test "returns chronological order" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> push 3
+                    |> toList
+                    |> Expect.equal [ 1, 2, 3 ]
+        , test "includes future after undo" <|
+            \() ->
+                init 1
+                    |> push 2
+                    |> push 3
+                    |> undo
+                    |> toList
+                    |> Expect.equal [ 1, 2, 3 ]
+        ]

@@ -1,0 +1,803 @@
+module DnD.Grid exposing
+    ( Grid
+    , GridItem
+    , GridConfig
+    , CompactionMode(..)
+    , GridPosition
+    , defaultConfig
+    , empty
+    , fromItems
+    , addItem
+    , removeItem
+    , moveItem
+    , resizeItem
+    , compact
+    , findItem
+    , itemsAt
+    , isOccupied
+    , hasCollision
+    , resolveCollisions
+    , toPositionList
+    , gridWidth
+    , itemPosition
+    )
+
+
+{-| Dashboard-style grid layout with drag and resize support.
+
+Provides a 2D grid data structure where items occupy rectangular regions
+spanning one or more columns and rows. Items can be moved, resized, and
+compacted. Collision detection and resolution ensure items never overlap
+unless explicitly allowed.
+
+Typical usage models a dashboard where widgets are arranged on a grid
+and users can drag widgets to reposition them or resize them by dragging
+a handle. The grid enforces column bounds and resolves overlaps by
+pushing colliding items downward (or rightward in horizontal compaction).
+
+# Grid
+
+@docs Grid, empty, fromItems
+
+# Items
+
+@docs GridItem, GridPosition, findItem, addItem, removeItem
+
+# Movement and Resize
+
+@docs moveItem, resizeItem
+
+# Compaction
+
+@docs CompactionMode, compact
+
+# Collision
+
+@docs itemsAt, isOccupied, hasCollision, resolveCollisions
+
+# Configuration
+
+@docs GridConfig, defaultConfig
+
+# Pixel Conversion
+
+@docs toPositionList, gridWidth, itemPosition
+
+-}
+
+
+{-| A grid containing positioned items.
+
+The grid tracks a list of items and the number of columns. Rows are
+unbounded — items can extend to any row. Column indices are 0-based,
+so a 12-column grid has columns 0 through 11.
+-}
+type alias Grid id =
+    { items : List (GridItem id)
+    , columns : Int
+    }
+
+
+{-| An item placed on the grid.
+
+  - `id`: Unique identifier for this item.
+  - `position`: The rectangular region this item occupies.
+  - `isStatic`: When True, this item cannot be moved or displaced by
+    collision resolution. Other items must move around it.
+-}
+type alias GridItem id =
+    { id : id
+    , position : GridPosition
+    , isStatic : Bool
+    }
+
+
+{-| Configuration controlling grid behavior and pixel layout.
+
+  - `columns`: Number of columns in the grid (typically 12).
+  - `rowHeight`: Height of one row unit in pixels.
+  - `gap`: Space between items in pixels.
+  - `containerWidth`: Total width of the grid container in pixels.
+    Cell widths are derived from this value minus gaps.
+  - `compaction`: How items are compacted after moves.
+  - `preventCollision`: When True, moves that would cause collisions
+    are rejected rather than resolved by pushing.
+-}
+type alias GridConfig =
+    { columns : Int
+    , rowHeight : Float
+    , gap : Float
+    , containerWidth : Float
+    , compaction : CompactionMode
+    , preventCollision : Bool
+    }
+
+
+{-| How the grid compacts items to fill empty space.
+
+  - `CompactVertical`: Items float upward to fill gaps. This is the
+    default and most common mode, used in dashboard layouts.
+  - `CompactHorizontal`: Items float leftward to fill gaps.
+  - `CompactNone`: No automatic compaction. Items stay exactly where
+    placed.
+-}
+type CompactionMode
+    = CompactVertical
+    | CompactHorizontal
+    | CompactNone
+
+
+{-| A rectangular position on the grid.
+
+  - `col`: 0-indexed column of the top-left corner.
+  - `row`: 0-indexed row of the top-left corner.
+  - `width`: Number of columns this item spans (minimum 1).
+  - `height`: Number of rows this item spans (minimum 1).
+-}
+type alias GridPosition =
+    { col : Int
+    , row : Int
+    , width : Int
+    , height : Int
+    }
+
+
+{-| Sensible default configuration for a 12-column dashboard grid.
+
+Uses 60px row height, 10px gap, vertical compaction, and collision
+prevention enabled. These values match common dashboard layout
+conventions.
+-}
+defaultConfig : GridConfig
+defaultConfig =
+    { columns = 12
+    , rowHeight = 60
+    , gap = 10
+    , containerWidth = 1200
+    , compaction = CompactVertical
+    , preventCollision = True
+    }
+
+
+{-| Create an empty grid with the given number of columns.
+
+    empty 12
+    -- { items = [], columns = 12 }
+-}
+empty : Int -> Grid id
+empty columns =
+    { items = []
+    , columns = max 1 columns
+    }
+
+
+{-| Create a grid from a list of items.
+
+Items are placed as given. No collision resolution or compaction is
+applied — the caller is responsible for providing non-overlapping
+positions, or calling `compact` afterward.
+
+    fromItems 12
+        [ { id = "widget-a", position = { col = 0, row = 0, width = 4, height = 2 }, isStatic = False }
+        , { id = "widget-b", position = { col = 4, row = 0, width = 4, height = 2 }, isStatic = False }
+        ]
+-}
+fromItems : Int -> List (GridItem id) -> Grid id
+fromItems columns items =
+    { items = items
+    , columns = max 1 columns
+    }
+
+
+{-| Add an item to the grid, resolving any collisions.
+
+If the new item overlaps existing items, colliding items are pushed
+downward to make room. Static items are never displaced — if the new
+item collides with a static item, the new item is still placed but
+the static item remains in its original position (non-static
+colliders are pushed instead).
+
+    addItem newWidget grid
+-}
+addItem : GridItem id -> Grid id -> Grid id
+addItem item grid =
+    resolveCollisions item { grid | items = item :: grid.items }
+
+
+{-| Remove an item from the grid by its identifier.
+
+Returns the grid unchanged if no item with the given id exists.
+
+    removeItem "widget-a" grid
+-}
+removeItem : id -> Grid id -> Grid id
+removeItem targetId grid =
+    { grid | items = List.filter (\item -> item.id /= targetId) grid.items }
+
+
+{-| Move an item to a new position on the grid.
+
+The item's position is updated and collisions are resolved. If the
+item is static, this function returns the grid unchanged. The new
+position is clamped to stay within grid column bounds.
+
+    moveItem "widget-a" { col = 2, row = 1, width = 4, height = 2 } grid
+-}
+moveItem : id -> GridPosition -> Grid id -> Grid id
+moveItem targetId newPos grid =
+    updateItemById targetId (setPosition (clampPosition grid.columns newPos)) grid
+
+
+{-| Resize an item to new dimensions.
+
+The item's width and height are updated while keeping its top-left
+corner fixed. Width is clamped so the item does not extend beyond
+the grid's column count. Height and width are clamped to a minimum
+of 1. Collisions caused by the resize are resolved.
+
+    resizeItem "widget-a" { width = 6, height = 3 } grid
+-}
+resizeItem : id -> { width : Int, height : Int } -> Grid id -> Grid id
+resizeItem targetId newSize grid =
+    updateItemById targetId (applyResize grid.columns newSize) grid
+
+
+{-| Apply compaction to the grid.
+
+Depending on the mode:
+  - `CompactVertical`: Each item is moved as far up as possible without
+    colliding with items above it. Items are processed in top-to-bottom,
+    left-to-right order.
+  - `CompactHorizontal`: Each item is moved as far left as possible
+    without colliding with items to its left. Items are processed in
+    left-to-right, top-to-bottom order.
+  - `CompactNone`: The grid is returned unchanged.
+
+Static items are never moved by compaction. Other items compact around
+them.
+
+    compact CompactVertical grid
+-}
+compact : CompactionMode -> Grid id -> Grid id
+compact mode grid =
+    compactHelp mode grid
+
+
+{-| Find an item by its identifier.
+
+Returns `Nothing` if no item with the given id exists.
+
+    findItem "widget-a" grid
+    -- Just { id = "widget-a", position = ..., isStatic = False }
+-}
+findItem : id -> Grid id -> Maybe (GridItem id)
+findItem targetId grid =
+    listFind (\item -> item.id == targetId) grid.items
+
+
+{-| Find all items that overlap a given rectangular region.
+
+An item overlaps the region if their rectangles share at least one
+cell. Useful for checking what occupies a region before placing a
+new item.
+
+    itemsAt { col = 0, row = 0, width = 4, height = 2 } grid
+-}
+itemsAt : GridPosition -> Grid id -> List (GridItem id)
+itemsAt pos grid =
+    List.filter (\item -> positionsOverlap pos item.position) grid.items
+
+
+{-| Check whether a specific cell is occupied by any item.
+
+Cell coordinates are 0-indexed. Returns False for cells outside
+the grid's column bounds.
+
+    isOccupied 3 1 grid
+    -- True if any item covers column 3, row 1
+-}
+isOccupied : Int -> Int -> Grid id -> Bool
+isOccupied col row grid =
+    List.any (\item -> cellInPosition col row item.position) grid.items
+
+
+{-| Check whether an item collides with any other item in the grid.
+
+An item collides with another if their rectangular regions overlap
+and they have different identifiers. The item being checked does not
+need to already be in the grid.
+
+    hasCollision candidateItem grid
+-}
+hasCollision : GridItem id -> Grid id -> Bool
+hasCollision item grid =
+    List.any (collidesWithItem item) grid.items
+
+
+{-| Resolve collisions caused by a specific item.
+
+Any non-static item that overlaps the given item is pushed downward
+(increasing its row) by the minimum amount needed to clear the
+overlap. The process repeats recursively: if a pushed item now
+collides with something below it, that item is pushed down as well.
+
+Static items are never moved. If a non-static item collides with a
+static item after being pushed, it is pushed further down until it
+clears all static items.
+
+    resolveCollisions newlyPlacedItem grid
+-}
+resolveCollisions : GridItem id -> Grid id -> Grid id
+resolveCollisions movedItem grid =
+    { grid | items = resolveCollisionsHelp movedItem grid.items }
+
+
+{-| Convert all grid positions to pixel coordinates.
+
+Each item's grid position is converted to pixel values based on the
+configuration's column count, row height, and gap size. Returns a
+list of records with the item id and its pixel rectangle.
+
+    toPositionList config grid
+    -- [ { id = "a", x = 0, y = 0, width = 320, height = 110 }, ... ]
+-}
+toPositionList : GridConfig -> Grid id -> List { id : id, x : Float, y : Float, width : Float, height : Float }
+toPositionList config grid =
+    List.map (itemToPixelRecord config) grid.items
+
+
+{-| Calculate the total grid width in pixels.
+
+Returns the container width from the configuration. All cell sizes
+and positions are derived from this value.
+
+    gridWidth config
+    -- 1200.0 (for default config)
+-}
+gridWidth : GridConfig -> Float
+gridWidth config =
+    config.containerWidth
+
+
+{-| Convert a single grid position to pixel coordinates.
+
+Computes the pixel rectangle for the given position based on the
+grid configuration. Useful when you need to position a single
+element (such as a drag overlay) without converting the entire grid.
+
+    itemPosition config { col = 2, row = 0, width = 4, height = 2 }
+    -- { x = ..., y = ..., width = ..., height = ... }
+-}
+itemPosition : GridConfig -> GridPosition -> { x : Float, y : Float, width : Float, height : Float }
+itemPosition config pos =
+    { x = positionToX config pos.col
+    , y = positionToY config pos.row
+    , width = spanToWidth config pos.width
+    , height = spanToHeight config pos.height
+    }
+
+
+
+-- INTERNAL HELPERS
+
+
+{-| Width of a single cell in pixels, excluding gap.
+
+Computed by subtracting the total gap space from the container width,
+then dividing evenly among columns.
+
+For a 12-column grid with 10px gap in a 1200px container:
+  Total gaps = 10 * 11 = 110px
+  Available = 1200 - 110 = 1090px
+  Cell width = 1090 / 12 ≈ 90.83px
+-}
+cellWidth : GridConfig -> Float
+cellWidth config =
+    let
+        totalGaps =
+            config.gap * toFloat (config.columns - 1)
+    in
+    (config.containerWidth - totalGaps) / toFloat config.columns
+
+
+{-| Convert a column index to a pixel X coordinate. -}
+positionToX : GridConfig -> Int -> Float
+positionToX config col =
+    toFloat col * (cellWidth config + config.gap)
+
+
+{-| Convert a row index to a pixel Y coordinate. -}
+positionToY : GridConfig -> Int -> Float
+positionToY config row =
+    toFloat row * (config.rowHeight + config.gap)
+
+
+{-| Convert a column span to pixel width. -}
+spanToWidth : GridConfig -> Int -> Float
+spanToWidth config span =
+    toFloat span * cellWidth config + toFloat (span - 1) * config.gap
+
+
+{-| Convert a row span to pixel height. -}
+spanToHeight : GridConfig -> Int -> Float
+spanToHeight config span =
+    toFloat span * config.rowHeight + toFloat (span - 1) * config.gap
+
+
+{-| Convert a grid item to a pixel-coordinate record. -}
+itemToPixelRecord : GridConfig -> GridItem id -> { id : id, x : Float, y : Float, width : Float, height : Float }
+itemToPixelRecord config item =
+    let
+        pixelPos =
+            itemPosition config item.position
+    in
+    { id = item.id
+    , x = pixelPos.x
+    , y = pixelPos.y
+    , width = pixelPos.width
+    , height = pixelPos.height
+    }
+
+
+{-| Check whether two rectangular positions overlap.
+
+Two rectangles overlap if they share at least one cell. They do not
+overlap if one is entirely to the left, right, above, or below the
+other.
+-}
+positionsOverlap : GridPosition -> GridPosition -> Bool
+positionsOverlap a b =
+    (a.col < b.col + b.width)
+        && (a.col + a.width > b.col)
+        && (a.row < b.row + b.height)
+        && (a.row + a.height > b.row)
+
+
+{-| Check whether a specific cell falls within a position rectangle. -}
+cellInPosition : Int -> Int -> GridPosition -> Bool
+cellInPosition col row pos =
+    (col >= pos.col)
+        && (col < pos.col + pos.width)
+        && (row >= pos.row)
+        && (row < pos.row + pos.height)
+
+
+{-| Check whether two items collide (overlap and have different ids). -}
+collidesWithItem : GridItem id -> GridItem id -> Bool
+collidesWithItem a b =
+    (a.id /= b.id) && positionsOverlap a.position b.position
+
+
+{-| Clamp a position to stay within column bounds.
+
+Ensures col >= 0 and col + width <= columns. Width and height are
+clamped to a minimum of 1.
+-}
+clampPosition : Int -> GridPosition -> GridPosition
+clampPosition columns pos =
+    let
+        clampedWidth =
+            clampInt 1 columns pos.width
+
+        clampedCol =
+            clampInt 0 (columns - clampedWidth) pos.col
+
+        clampedHeight =
+            max 1 pos.height
+
+        clampedRow =
+            max 0 pos.row
+    in
+    { col = clampedCol
+    , row = clampedRow
+    , width = clampedWidth
+    , height = clampedHeight
+    }
+
+
+{-| Set the position on a grid item. -}
+setPosition : GridPosition -> GridItem id -> GridItem id
+setPosition pos item =
+    { item | position = pos }
+
+
+{-| Apply a resize to a grid item, clamping to grid bounds. -}
+applyResize : Int -> { width : Int, height : Int } -> GridItem id -> GridItem id
+applyResize columns newSize item =
+    let
+        clampedWidth =
+            clampInt 1 (columns - item.position.col) newSize.width
+
+        clampedHeight =
+            max 1 newSize.height
+    in
+    { item
+        | position =
+            { col = item.position.col
+            , row = item.position.row
+            , width = clampedWidth
+            , height = clampedHeight
+            }
+    }
+
+
+{-| Update an item by id, applying a transformation function.
+
+If the item is static, the grid is returned unchanged. After
+updating, collisions are resolved.
+-}
+updateItemById : id -> (GridItem id -> GridItem id) -> Grid id -> Grid id
+updateItemById targetId transform grid =
+    let
+        updatedItems =
+            List.map (applyTransformIfMatch targetId transform) grid.items
+
+        updatedGrid =
+            { grid | items = updatedItems }
+    in
+    resolveAfterUpdate targetId updatedGrid
+
+
+{-| Apply a transform to an item if its id matches and it is not static. -}
+applyTransformIfMatch : id -> (GridItem id -> GridItem id) -> GridItem id -> GridItem id
+applyTransformIfMatch targetId transform item =
+    if item.id == targetId && not item.isStatic then
+        transform item
+
+    else
+        item
+
+
+{-| After updating an item, resolve any collisions it caused. -}
+resolveAfterUpdate : id -> Grid id -> Grid id
+resolveAfterUpdate targetId grid =
+    listFind (\item -> item.id == targetId) grid.items
+        |> Maybe.map (\item -> resolveCollisions item grid)
+        |> Maybe.withDefault grid
+
+
+{-| Resolve collisions caused by a single item against a list of items.
+
+Items that collide with the moved item are pushed down. The process
+is applied iteratively: after pushing an item down, we check whether
+it now collides with anything else and push those as well.
+-}
+resolveCollisionsHelp : GridItem id -> List (GridItem id) -> List (GridItem id)
+resolveCollisionsHelp movedItem items =
+    List.foldl (pushIfColliding movedItem) [] items
+        |> List.reverse
+
+
+{-| If an item collides with the moved item and is not static, push it down.
+
+The item is pushed down so its top edge is at the bottom edge of the
+moved item. If the item is the moved item itself, or is static, it
+is left unchanged.
+-}
+pushIfColliding : GridItem id -> GridItem id -> List (GridItem id) -> List (GridItem id)
+pushIfColliding movedItem currentItem acc =
+    if currentItem.id == movedItem.id then
+        currentItem :: acc
+
+    else if currentItem.isStatic then
+        currentItem :: acc
+
+    else if positionsOverlap movedItem.position currentItem.position then
+        pushItemDown movedItem currentItem :: acc
+
+    else
+        currentItem :: acc
+
+
+{-| Push an item down so it no longer overlaps with the moved item.
+
+The pushed item's row is set to the bottom edge of the moved item.
+-}
+pushItemDown : GridItem id -> GridItem id -> GridItem id
+pushItemDown movedItem item =
+    let
+        newRow =
+            movedItem.position.row + movedItem.position.height
+    in
+    { item
+        | position =
+            { col = item.position.col
+            , row = newRow
+            , width = item.position.width
+            , height = item.position.height
+            }
+    }
+
+
+{-| Apply compaction based on the mode. -}
+compactHelp : CompactionMode -> Grid id -> Grid id
+compactHelp mode grid =
+    if mode == CompactNone then
+        grid
+
+    else if mode == CompactVertical then
+        compactVertical grid
+
+    else
+        compactHorizontal grid
+
+
+{-| Compact items vertically.
+
+Sort items by row (top-to-bottom), then by column (left-to-right).
+For each non-static item, try to move it as high as possible without
+colliding with any item that has already been placed.
+-}
+compactVertical : Grid id -> Grid id
+compactVertical grid =
+    let
+        sorted =
+            List.sortWith compareByRowThenCol grid.items
+
+        compacted =
+            List.foldl (compactOneVertical grid.columns) [] sorted
+    in
+    { grid | items = List.reverse compacted }
+
+
+{-| Compact a single item vertically.
+
+Tries rows from 0 upward until finding a position where the item
+does not collide with any already-placed item. Static items are
+placed unchanged.
+-}
+compactOneVertical : Int -> GridItem id -> List (GridItem id) -> List (GridItem id)
+compactOneVertical columns item placed =
+    if item.isStatic then
+        item :: placed
+
+    else
+        let
+            bestRow =
+                findBestRow item placed 0
+        in
+        (setPosition
+            { col = item.position.col
+            , row = bestRow
+            , width = item.position.width
+            , height = item.position.height
+            }
+            item
+        )
+            :: placed
+
+
+{-| Find the lowest row (closest to 0) where the item fits without collision. -}
+findBestRow : GridItem id -> List (GridItem id) -> Int -> Int
+findBestRow item placed candidateRow =
+    let
+        candidatePos =
+            { col = item.position.col
+            , row = candidateRow
+            , width = item.position.width
+            , height = item.position.height
+            }
+    in
+    if List.any (\other -> positionsOverlap candidatePos other.position) placed then
+        findBestRow item placed (candidateRow + 1)
+
+    else
+        candidateRow
+
+
+{-| Compact items horizontally.
+
+Sort items by column (left-to-right), then by row (top-to-bottom).
+For each non-static item, try to move it as far left as possible
+without colliding with any item that has already been placed.
+-}
+compactHorizontal : Grid id -> Grid id
+compactHorizontal grid =
+    let
+        sorted =
+            List.sortWith compareByColThenRow grid.items
+
+        compacted =
+            List.foldl (compactOneHorizontal grid.columns) [] sorted
+    in
+    { grid | items = List.reverse compacted }
+
+
+{-| Compact a single item horizontally.
+
+Tries columns from 0 rightward until finding a position where the
+item does not collide with any already-placed item and stays within
+column bounds. Static items are placed unchanged.
+-}
+compactOneHorizontal : Int -> GridItem id -> List (GridItem id) -> List (GridItem id)
+compactOneHorizontal columns item placed =
+    if item.isStatic then
+        item :: placed
+
+    else
+        let
+            bestCol =
+                findBestCol columns item placed 0
+        in
+        (setPosition
+            { col = bestCol
+            , row = item.position.row
+            , width = item.position.width
+            , height = item.position.height
+            }
+            item
+        )
+            :: placed
+
+
+{-| Find the leftmost column where the item fits without collision. -}
+findBestCol : Int -> GridItem id -> List (GridItem id) -> Int -> Int
+findBestCol columns item placed candidateCol =
+    if candidateCol + item.position.width > columns then
+        candidateCol
+
+    else
+        let
+            candidatePos =
+                { col = candidateCol
+                , row = item.position.row
+                , width = item.position.width
+                , height = item.position.height
+                }
+        in
+        if List.any (\other -> positionsOverlap candidatePos other.position) placed then
+            findBestCol columns item placed (candidateCol + 1)
+
+        else
+            candidateCol
+
+
+{-| Compare two items by row first, then by column. -}
+compareByRowThenCol : GridItem id -> GridItem id -> Order
+compareByRowThenCol a b =
+    if a.position.row < b.position.row then
+        LT
+
+    else if a.position.row > b.position.row then
+        GT
+
+    else if a.position.col < b.position.col then
+        LT
+
+    else if a.position.col > b.position.col then
+        GT
+
+    else
+        EQ
+
+
+{-| Compare two items by column first, then by row. -}
+compareByColThenRow : GridItem id -> GridItem id -> Order
+compareByColThenRow a b =
+    if a.position.col < b.position.col then
+        LT
+
+    else if a.position.col > b.position.col then
+        GT
+
+    else if a.position.row < b.position.row then
+        LT
+
+    else if a.position.row > b.position.row then
+        GT
+
+    else
+        EQ
+
+
+{-| Clamp an integer to a range [lo, hi]. -}
+clampInt : Int -> Int -> Int -> Int
+clampInt lo hi value =
+    max lo (min hi value)
+
+
+{-| Find the first element in a list matching a predicate. -}
+listFind : (a -> Bool) -> List a -> Maybe a
+listFind predicate list =
+    List.head (List.filter predicate list)
+

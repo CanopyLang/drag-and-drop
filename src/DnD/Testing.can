@@ -1,0 +1,318 @@
+module DnD.Testing exposing
+    ( simulateDrag
+    , simulateDragPath
+    , simulateDragCancel
+    , simulateKeyboardDrag
+    , mockDragItem
+    , mockDropTarget
+    , mockState
+    , mockDraggingState
+    , expectOrder
+    , expectContains
+    , expectNotContains
+    , dragResult
+    )
+
+
+{-| Test utilities for drag-and-drop operations.
+
+This module provides first-class test support for drag-and-drop interactions.
+Instead of relying on browser events or end-to-end tests, you can simulate
+drag operations as pure functions and assert on the resulting list order.
+
+All simulation functions operate on plain lists and produce plain lists,
+making them easy to use with any test framework.
+
+# Mock Constructors
+@docs mockDragItem, mockDropTarget, mockState, mockDraggingState
+
+# Simulation
+@docs simulateDrag, simulateDragPath, simulateDragCancel, simulateKeyboardDrag
+
+# Event Construction
+@docs dragResult
+
+# Assertions
+@docs expectOrder, expectContains, expectNotContains
+
+-}
+
+
+import DnD exposing (DragEnd, DragItem, DragOperation(..), DropTarget, State)
+import DnD.Sortable as Sortable
+
+
+-- MOCK CONSTRUCTORS
+
+
+{-| Create a mock `DragItem` with a default bounding rect and empty item type.
+
+The default rect is `{ x = 0, y = 0, width = 100, height = 50 }`.
+This is useful for tests that only care about identity, not geometry.
+
+    mockDragItem "card-1"
+    -- { id = "card-1", rect = { x = 0, y = 0, width = 100, height = 50 }, itemType = "" }
+-}
+mockDragItem : id -> DragItem id
+mockDragItem id =
+    { id = id
+    , rect = defaultRect
+    , itemType = ""
+    }
+
+
+{-| Create a mock `DropTarget` with a default bounding rect that accepts all types.
+
+The default rect is `{ x = 0, y = 0, width = 100, height = 50 }`.
+Setting `accept` to `Nothing` means this target accepts any item type.
+
+    mockDropTarget "zone-a"
+    -- { id = "zone-a", rect = { x = 0, y = 0, width = 100, height = 50 }, accept = Nothing }
+-}
+mockDropTarget : id -> DropTarget id
+mockDropTarget id =
+    { id = id
+    , rect = defaultRect
+    , accept = Nothing
+    }
+
+
+{-| Create an idle drag-and-drop state with no active operation.
+
+Equivalent to `DnD.init` but named for test clarity.
+
+    mockState
+    -- { operation = NotDragging, announcement = "" }
+-}
+mockState : State id
+mockState =
+    { operation = NotDragging
+    , announcement = ""
+    }
+
+
+{-| Create a state where the given id is actively being dragged.
+
+The drag starts at the origin with zero delta and no drop target.
+Useful for testing views that render differently during a drag.
+
+    mockDraggingState "item-2"
+    -- { operation = Dragging { item = mockDragItem "item-2", ... }, announcement = "" }
+-}
+mockDraggingState : id -> State id
+mockDraggingState id =
+    { operation =
+        Dragging
+            { item = mockDragItem id
+            , current = { x = 0, y = 0 }
+            , delta = { x = 0, y = 0 }
+            , over = Nothing
+            }
+    , announcement = ""
+    }
+
+
+-- SIMULATION
+
+
+{-| Simulate a complete drag from a source item to a target item in a sortable list.
+
+Constructs a `DragEnd` event with the source as the active item and the target
+as the drop target, then applies `DnD.Sortable.reorder` to produce the new order.
+
+If either the source or target is not in the list, the list is returned unchanged.
+
+    simulateDrag "b" "d" [ "a", "b", "c", "d", "e" ]
+    -- [ "a", "c", "d", "b", "e" ]
+-}
+simulateDrag : id -> id -> List id -> List id
+simulateDrag sourceId targetId items =
+    Sortable.reorder (dragResult sourceId targetId) items
+
+
+{-| Simulate a drag that passes through multiple intermediate targets.
+
+The item is moved to the final target in the path. Intermediate targets
+are provided to document the drag trajectory, but only the last target
+determines the final position. This matches real drag-and-drop behavior
+where the drop position is determined by where the item is released.
+
+    simulateDragPath "a" [ "b", "c", "d" ] [ "a", "b", "c", "d", "e" ]
+    -- [ "b", "c", "d", "a", "e" ]
+-}
+simulateDragPath : id -> List id -> List id -> List id
+simulateDragPath sourceId path items =
+    applyFinalTarget sourceId path items
+
+
+{-| Simulate starting a drag and then cancelling it.
+
+The list is always returned unchanged because a cancelled drag has no
+effect on the item order.
+
+    simulateDragCancel "b" [ "a", "b", "c" ]
+    -- [ "a", "b", "c" ]
+-}
+simulateDragCancel : id -> List id -> List id
+simulateDragCancel _ items =
+    items
+
+
+{-| Simulate a keyboard-driven drag by moving an item a given number of positions.
+
+Positive values move the item forward (toward the end of the list), negative
+values move it backward (toward the beginning). If the movement would place
+the item outside the list bounds, it is clamped to the nearest valid position.
+
+    simulateKeyboardDrag "b" 2 [ "a", "b", "c", "d", "e" ]
+    -- [ "a", "c", "d", "b", "e" ]
+
+    simulateKeyboardDrag "c" -1 [ "a", "b", "c", "d" ]
+    -- [ "a", "c", "b", "d" ]
+-}
+simulateKeyboardDrag : id -> Int -> List id -> List id
+simulateKeyboardDrag itemId positions items =
+    let
+        maybeSourceIndex =
+            Sortable.findIndex itemId items
+    in
+    applyKeyboardMove itemId positions maybeSourceIndex items
+
+
+-- EVENT CONSTRUCTION
+
+
+{-| Construct a `DragEnd` event from a source id and a target id.
+
+This creates the event structure that `DnD.Sortable.reorder` expects.
+The source becomes the active drag item and the target becomes the
+drop target, both with default rects.
+
+    dragResult "card-1" "card-3"
+    -- { active = mockDragItem "card-1", over = Just (mockDropTarget "card-3") }
+-}
+dragResult : id -> id -> DragEnd id
+dragResult sourceId targetId =
+    { active = mockDragItem sourceId
+    , over = Just (mockDropTarget targetId)
+    }
+
+
+-- ASSERTIONS
+
+
+{-| Check whether two lists contain the same elements in the same order.
+
+This is a simple structural equality check on lists.
+
+    expectOrder [ 1, 2, 3 ] [ 1, 2, 3 ]
+    -- True
+
+    expectOrder [ 1, 3, 2 ] [ 1, 2, 3 ]
+    -- False
+-}
+expectOrder : List id -> List id -> Bool
+expectOrder expected actual =
+    expected == actual
+
+
+{-| Check whether a list contains a specific item.
+
+Searches the entire list for the given value using structural equality.
+
+    expectContains "b" [ "a", "b", "c" ]
+    -- True
+
+    expectContains "z" [ "a", "b", "c" ]
+    -- False
+-}
+expectContains : id -> List id -> Bool
+expectContains item list =
+    List.member item list
+
+
+{-| Check whether a list does not contain a specific item.
+
+The logical negation of `expectContains`. Useful for verifying that an
+item was removed from a container after a cross-container move.
+
+    expectNotContains "z" [ "a", "b", "c" ]
+    -- True
+
+    expectNotContains "b" [ "a", "b", "c" ]
+    -- False
+-}
+expectNotContains : id -> List id -> Bool
+expectNotContains item list =
+    not (List.member item list)
+
+
+-- INTERNAL HELPERS
+
+
+{-| The default bounding rect used by mock constructors. -}
+defaultRect : DnD.Rect
+defaultRect =
+    { x = 0
+    , y = 0
+    , width = 100
+    , height = 50
+    }
+
+
+{-| Apply a keyboard move given the resolved source index.
+
+When the source item is not found in the list, the list is returned
+unchanged. Otherwise the item is moved by the requested number of
+positions, clamped to the valid index range.
+-}
+applyKeyboardMove : id -> Int -> Maybe Int -> List id -> List id
+applyKeyboardMove itemId positions maybeSourceIndex items =
+    case maybeSourceIndex of
+        Nothing ->
+            items
+
+        Just sourceIndex ->
+            let
+                listLen =
+                    List.length items
+
+                rawTarget =
+                    sourceIndex + positions
+
+                clampedTarget =
+                    clamp 0 (listLen - 1) rawTarget
+
+                withoutItem =
+                    Sortable.removeItem itemId items
+            in
+            Sortable.insertAt clampedTarget itemId withoutItem
+
+
+{-| Apply reorder using only the final target in the path.
+
+If the path is empty, the list is returned unchanged because there
+is no target to drop onto.
+-}
+applyFinalTarget : id -> List id -> List id -> List id
+applyFinalTarget sourceId path items =
+    case lastElement path of
+        Nothing ->
+            items
+
+        Just finalTarget ->
+            simulateDrag sourceId finalTarget items
+
+
+{-| Get the last element of a list, or Nothing if the list is empty. -}
+lastElement : List a -> Maybe a
+lastElement list =
+    case list of
+        [] ->
+            Nothing
+
+        [ x ] ->
+            Just x
+
+        _ :: rest ->
+            lastElement rest

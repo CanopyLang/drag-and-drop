@@ -1,0 +1,226 @@
+module DnD.Announcements exposing
+    ( Announcements(..)
+    , AnnouncementStrings
+    , defaults
+    , none
+    , fromStrings
+    , formatPickedUp
+    , formatMoved
+    , formatDropped
+    , formatCancelled
+    , viewLiveRegion
+    , viewInstructions
+    )
+
+
+{-| ARIA live region announcements for accessible drag-and-drop.
+
+Screen readers announce drag lifecycle events so non-sighted users
+understand what is happening. Announcements are rendered in a visually
+hidden live region that the screen reader picks up automatically.
+
+@docs Announcements, AnnouncementStrings, defaults, none, fromStrings
+
+@docs formatPickedUp, formatMoved, formatDropped, formatCancelled
+
+@docs viewLiveRegion, viewInstructions
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import Html exposing (Html, div, text)
+import Html.Attributes exposing (attribute)
+
+
+{-| Announcement configuration.
+
+  - `Default`: Uses built-in English announcements.
+  - `Translated`: Uses user-provided translated strings.
+  - `None`: No announcements are made.
+-}
+type Announcements id
+    = Default
+    | Translated AnnouncementStrings
+    | None
+
+
+{-| User-provided strings for internationalization.
+
+Each field is a function that takes a name, position, and total count,
+and returns the announcement string.
+-}
+type alias AnnouncementStrings =
+    { pickedUp : String -> Int -> Int -> String
+    , moved : String -> Int -> Int -> String
+    , dropped : String -> Int -> Int -> String
+    , cancelled : String -> Int -> Int -> String
+    , instructions : String
+    }
+
+
+{-| Default English announcements.
+
+Uses the provided function to convert item ids to display names.
+
+    announcements = DnD.Announcements.defaults
+-}
+defaults : Announcements id
+defaults =
+    Default
+
+
+{-| No announcements. Use this when providing your own ARIA strategy.
+-}
+none : Announcements id
+none =
+    None
+
+
+{-| Create announcements from translated strings.
+
+    spanishAnnouncements =
+        DnD.Announcements.fromStrings
+            { pickedUp = \name pos total ->
+                "Recogido " ++ name ++ ". Posicion " ++ String.fromInt pos ++ " de " ++ String.fromInt total ++ "."
+            , moved = \name pos total ->
+                "Movido " ++ name ++ ". Nueva posicion " ++ String.fromInt pos ++ " de " ++ String.fromInt total ++ "."
+            , dropped = \name pos total ->
+                "Soltado " ++ name ++ ". Posicion final " ++ String.fromInt pos ++ " de " ++ String.fromInt total ++ "."
+            , cancelled = \name pos total ->
+                "Reorden cancelado. " ++ name ++ " volvio a posicion " ++ String.fromInt pos ++ " de " ++ String.fromInt total ++ "."
+            , instructions = "Presione espacio o enter para agarrar. Use las flechas para mover. Presione espacio o enter para soltar."
+            }
+-}
+fromStrings : AnnouncementStrings -> Announcements id
+fromStrings strings =
+    Translated strings
+
+
+{-| Format a "picked up" announcement.
+
+    formatPickedUp "Task 1" 2 5
+    -- "Picked up Task 1. Current position 2 of 5."
+-}
+formatPickedUp : String -> Int -> Int -> String
+formatPickedUp name position total =
+    "Picked up "
+        ++ name
+        ++ ". Current position "
+        ++ String.fromInt position
+        ++ " of "
+        ++ String.fromInt total
+        ++ "."
+
+
+{-| Format a "moved" announcement.
+
+    formatMoved "Task 1" 3 5
+    -- "Moved Task 1. New position 3 of 5."
+-}
+formatMoved : String -> Int -> Int -> String
+formatMoved name position total =
+    "Moved "
+        ++ name
+        ++ ". New position "
+        ++ String.fromInt position
+        ++ " of "
+        ++ String.fromInt total
+        ++ "."
+
+
+{-| Format a "dropped" announcement.
+
+    formatDropped "Task 1" 3 5
+    -- "Dropped Task 1. Final position 3 of 5."
+-}
+formatDropped : String -> Int -> Int -> String
+formatDropped name position total =
+    "Dropped "
+        ++ name
+        ++ ". Final position "
+        ++ String.fromInt position
+        ++ " of "
+        ++ String.fromInt total
+        ++ "."
+
+
+{-| Format a "cancelled" announcement.
+
+    formatCancelled "Task 1" 2 5
+    -- "Reorder cancelled. Task 1 returned to position 2 of 5."
+-}
+formatCancelled : String -> Int -> Int -> String
+formatCancelled name position total =
+    "Reorder cancelled. "
+        ++ name
+        ++ " returned to position "
+        ++ String.fromInt position
+        ++ " of "
+        ++ String.fromInt total
+        ++ "."
+
+
+{-| Visually hidden styles that remain accessible to screen readers.
+
+Uses the clip-rect technique for maximum browser compatibility.
+-}
+visuallyHiddenStyles : List Style
+visuallyHiddenStyles =
+    [ Css.position Value.absolute
+    , Css.width (Value.px 1)
+    , Css.height (Value.px 1)
+    , Css.padding (Value.px 0)
+    , Css.margin (Value.px -1)
+    , Css.overflow Value.hidden
+    , Css.property "clip" "rect(0, 0, 0, 0)"
+    , Css.whiteSpace Value.nowrap
+    , Css.borderWidth (Value.px 0)
+    ]
+
+
+{-| Render the ARIA live region.
+
+Place this once in your view, typically near the root. The live region
+is visually hidden but read by screen readers when its content changes.
+
+The announcement string is displayed in an `aria-live="assertive"` region.
+
+    view model =
+        div []
+            [ myContent
+            , DnD.Announcements.viewLiveRegion "Picked up item 1"
+            ]
+-}
+viewLiveRegion : String -> Html msg
+viewLiveRegion announcement =
+    div
+        [ attribute "aria-live" "assertive"
+        , attribute "aria-atomic" "true"
+        , attribute "role" "status"
+        , Css.inlineStyle visuallyHiddenStyles
+        ]
+        [ text announcement ]
+
+
+{-| Render the drag instructions element for aria-describedby.
+
+Place this once in your view. Draggable elements reference this via
+`aria-describedby` to tell screen reader users how to operate the
+drag-and-drop interface.
+
+    view model =
+        div []
+            [ myContent
+            , DnD.Announcements.viewInstructions
+            ]
+-}
+viewInstructions : Html msg
+viewInstructions =
+    div
+        [ attribute "id" "dnd-instructions"
+        , Css.inlineStyle visuallyHiddenStyles
+        ]
+        [ text "Press space or enter to grab. Use arrow keys to move. Press space or enter to drop. Press escape to cancel."
+        ]

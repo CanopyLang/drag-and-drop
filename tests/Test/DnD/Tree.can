@@ -1,0 +1,498 @@
+module Test.DnD.Tree exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD.Tree exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.Tree"
+        [ flattenTests
+        , findNodeTests
+        , isValidMoveTests
+        , applyMoveTests
+        , expandCollapseToggleTests
+        , ancestorsTests
+        , descendantsTests
+        , isAncestorOfTests
+        , nodeDepthTests
+        , nodeChildrenTests
+        ]
+
+
+{-| Sample tree structure:
+
+    root
+    +-- child1
+    |   +-- grandchild1
+    |   +-- grandchild2
+    +-- child2
+    +-- child3
+        +-- grandchild3
+
+-}
+sampleTree : TreeNode String
+sampleTree =
+    treeNode "root"
+        [ treeNode "child1"
+            [ treeNode "grandchild1" [] False
+            , treeNode "grandchild2" [] False
+            ]
+            True
+        , treeNode "child2" [] False
+        , treeNode "child3"
+            [ treeNode "grandchild3" [] False
+            ]
+            True
+        ]
+        True
+
+
+flattenTests : Test
+flattenTests =
+    describe "flatten"
+        [ test "root is at depth 0" <|
+            \() ->
+                let
+                    flattened =
+                        flatten sampleTree
+                in
+                List.head flattened
+                    |> Maybe.map .depth
+                    |> Expect.equal (Just 0)
+        , test "root has no parent" <|
+            \() ->
+                let
+                    flattened =
+                        flatten sampleTree
+                in
+                List.head flattened
+                    |> Maybe.map .parentId
+                    |> Expect.equal (Just Nothing)
+        , test "children are at depth 1" <|
+            \() ->
+                let
+                    flattened =
+                        flatten sampleTree
+
+                    child1Depth =
+                        List.filter (\n -> n.id == "child1") flattened
+                            |> List.head
+                            |> Maybe.map .depth
+                in
+                child1Depth
+                    |> Expect.equal (Just 1)
+        , test "grandchildren are at depth 2" <|
+            \() ->
+                let
+                    flattened =
+                        flatten sampleTree
+
+                    gc1Depth =
+                        List.filter (\n -> n.id == "grandchild1") flattened
+                            |> List.head
+                            |> Maybe.map .depth
+                in
+                gc1Depth
+                    |> Expect.equal (Just 2)
+        , test "children have correct parent" <|
+            \() ->
+                let
+                    flattened =
+                        flatten sampleTree
+
+                    child1Parent =
+                        List.filter (\n -> n.id == "child1") flattened
+                            |> List.head
+                            |> Maybe.map .parentId
+                in
+                child1Parent
+                    |> Expect.equal (Just (Just "root"))
+        , test "grandchild has correct parent" <|
+            \() ->
+                let
+                    flattened =
+                        flatten sampleTree
+
+                    gc1Parent =
+                        List.filter (\n -> n.id == "grandchild1") flattened
+                            |> List.head
+                            |> Maybe.map .parentId
+                in
+                gc1Parent
+                    |> Expect.equal (Just (Just "child1"))
+        , test "flatten produces correct number of visible nodes" <|
+            \() ->
+                flatten sampleTree
+                    |> List.length
+                    |> Expect.equal 7
+        , test "collapsed node hides children" <|
+            \() ->
+                let
+                    collapsedTree =
+                        collapseNode "child1" sampleTree
+                in
+                flatten collapsedTree
+                    |> List.length
+                    |> Expect.equal 5
+        , test "depth-first pre-order produces correct id sequence" <|
+            \() ->
+                flatten sampleTree
+                    |> List.map .id
+                    |> Expect.equal
+                        [ "root"
+                        , "child1"
+                        , "grandchild1"
+                        , "grandchild2"
+                        , "child2"
+                        , "child3"
+                        , "grandchild3"
+                        ]
+        , test "last child flag is set correctly" <|
+            \() ->
+                let
+                    flattened =
+                        flatten sampleTree
+
+                    child3IsLast =
+                        List.filter (\n -> n.id == "child3") flattened
+                            |> List.head
+                            |> Maybe.map .isLastChild
+                in
+                child3IsLast
+                    |> Expect.equal (Just True)
+        , test "non-last child has isLastChild False" <|
+            \() ->
+                let
+                    flattened =
+                        flatten sampleTree
+
+                    child1IsLast =
+                        List.filter (\n -> n.id == "child1") flattened
+                            |> List.head
+                            |> Maybe.map .isLastChild
+                in
+                child1IsLast
+                    |> Expect.equal (Just False)
+        ]
+
+
+findNodeTests : Test
+findNodeTests =
+    describe "findNode"
+        [ test "finds root node" <|
+            \() ->
+                findNode "root" sampleTree
+                    |> Maybe.map nodeId
+                    |> Expect.equal (Just "root")
+        , test "finds nested node" <|
+            \() ->
+                findNode "grandchild2" sampleTree
+                    |> Maybe.map nodeId
+                    |> Expect.equal (Just "grandchild2")
+        , test "returns Nothing for missing node" <|
+            \() ->
+                findNode "nonexistent" sampleTree
+                    |> Expect.equal Nothing
+        , test "finds deeply nested node" <|
+            \() ->
+                findNode "grandchild3" sampleTree
+                    |> Maybe.map nodeId
+                    |> Expect.equal (Just "grandchild3")
+        ]
+
+
+isValidMoveTests : Test
+isValidMoveTests =
+    describe "isValidMove"
+        [ test "detects cycle: parent into own child" <|
+            \() ->
+                isValidMove "child1" "grandchild1" sampleTree
+                    |> Expect.equal False
+        , test "detects cycle: root into descendant" <|
+            \() ->
+                isValidMove "root" "grandchild2" sampleTree
+                    |> Expect.equal False
+        , test "allows valid move between siblings" <|
+            \() ->
+                isValidMove "child1" "child2" sampleTree
+                    |> Expect.equal True
+        , test "allows moving leaf to another branch" <|
+            \() ->
+                isValidMove "grandchild1" "child3" sampleTree
+                    |> Expect.equal True
+        , test "rejects moving node to itself" <|
+            \() ->
+                isValidMove "child1" "child1" sampleTree
+                    |> Expect.equal False
+        ]
+
+
+applyMoveTests : Test
+applyMoveTests =
+    describe "applyMove"
+        [ test "relocates a node to a new parent" <|
+            \() ->
+                let
+                    move =
+                        { nodeId = "grandchild1"
+                        , fromParent = Just "child1"
+                        , toParent = Just "child3"
+                        , toPosition = Inside
+                        , toIndex = 1
+                        }
+
+                    result =
+                        applyMove move sampleTree
+                in
+                findNode "grandchild1" result
+                    |> Maybe.map nodeId
+                    |> Expect.equal (Just "grandchild1")
+        , test "node is removed from original parent after move" <|
+            \() ->
+                let
+                    move =
+                        { nodeId = "grandchild1"
+                        , fromParent = Just "child1"
+                        , toParent = Just "child3"
+                        , toPosition = Inside
+                        , toIndex = 1
+                        }
+
+                    result =
+                        applyMove move sampleTree
+
+                    child1Children =
+                        nodeChildren "child1" result
+                in
+                List.map nodeId child1Children
+                    |> Expect.equal [ "grandchild2" ]
+        , test "node appears in new parent after move" <|
+            \() ->
+                let
+                    move =
+                        { nodeId = "grandchild1"
+                        , fromParent = Just "child1"
+                        , toParent = Just "child3"
+                        , toPosition = Inside
+                        , toIndex = 1
+                        }
+
+                    result =
+                        applyMove move sampleTree
+
+                    child3Children =
+                        nodeChildren "child3" result
+                in
+                List.map nodeId child3Children
+                    |> Expect.equal [ "grandchild3", "grandchild1" ]
+        , test "moving nonexistent node returns tree unchanged" <|
+            \() ->
+                let
+                    move =
+                        { nodeId = "nonexistent"
+                        , fromParent = Nothing
+                        , toParent = Just "child1"
+                        , toPosition = Inside
+                        , toIndex = 0
+                        }
+
+                    result =
+                        applyMove move sampleTree
+                in
+                flatten result
+                    |> List.map .id
+                    |> Expect.equal (flatten sampleTree |> List.map .id)
+        ]
+
+
+expandCollapseToggleTests : Test
+expandCollapseToggleTests =
+    describe "expandNode / collapseNode / toggleNode"
+        [ test "expandNode sets isExpanded to True" <|
+            \() ->
+                let
+                    result =
+                        expandNode "child2" sampleTree
+                in
+                findNode "child2" result
+                    |> Maybe.map nodeIsExpanded
+                    |> Expect.equal (Just True)
+        , test "collapseNode sets isExpanded to False" <|
+            \() ->
+                let
+                    result =
+                        collapseNode "child1" sampleTree
+                in
+                findNode "child1" result
+                    |> Maybe.map nodeIsExpanded
+                    |> Expect.equal (Just False)
+        , test "toggleNode flips True to False" <|
+            \() ->
+                let
+                    result =
+                        toggleNode "child1" sampleTree
+                in
+                findNode "child1" result
+                    |> Maybe.map nodeIsExpanded
+                    |> Expect.equal (Just False)
+        , test "toggleNode flips False to True" <|
+            \() ->
+                let
+                    result =
+                        toggleNode "child2" sampleTree
+                in
+                findNode "child2" result
+                    |> Maybe.map nodeIsExpanded
+                    |> Expect.equal (Just True)
+        , test "collapseNode on already collapsed is no-op" <|
+            \() ->
+                let
+                    result =
+                        collapseNode "child2" sampleTree
+                in
+                findNode "child2" result
+                    |> Maybe.map nodeIsExpanded
+                    |> Expect.equal (Just False)
+        , test "expandNode on already expanded is no-op" <|
+            \() ->
+                let
+                    result =
+                        expandNode "child1" sampleTree
+                in
+                findNode "child1" result
+                    |> Maybe.map nodeIsExpanded
+                    |> Expect.equal (Just True)
+        ]
+
+
+ancestorsTests : Test
+ancestorsTests =
+    describe "ancestors"
+        [ test "root has no ancestors" <|
+            \() ->
+                ancestors "root" sampleTree
+                    |> Expect.equal []
+        , test "child has root as ancestor" <|
+            \() ->
+                ancestors "child1" sampleTree
+                    |> Expect.equal [ "root" ]
+        , test "grandchild has root and parent as ancestors" <|
+            \() ->
+                ancestors "grandchild1" sampleTree
+                    |> Expect.equal [ "root", "child1" ]
+        , test "grandchild3 has root and child3 as ancestors" <|
+            \() ->
+                ancestors "grandchild3" sampleTree
+                    |> Expect.equal [ "root", "child3" ]
+        , test "nonexistent node returns empty" <|
+            \() ->
+                ancestors "nonexistent" sampleTree
+                    |> Expect.equal []
+        ]
+
+
+descendantsTests : Test
+descendantsTests =
+    describe "descendants"
+        [ test "leaf has no descendants" <|
+            \() ->
+                descendants "grandchild1" sampleTree
+                    |> Expect.equal []
+        , test "child1 has two grandchild descendants" <|
+            \() ->
+                descendants "child1" sampleTree
+                    |> List.sort
+                    |> Expect.equal [ "grandchild1", "grandchild2" ]
+        , test "root has all descendants" <|
+            \() ->
+                descendants "root" sampleTree
+                    |> List.sort
+                    |> Expect.equal
+                        [ "child1"
+                        , "child2"
+                        , "child3"
+                        , "grandchild1"
+                        , "grandchild2"
+                        , "grandchild3"
+                        ]
+        , test "nonexistent node returns empty" <|
+            \() ->
+                descendants "nonexistent" sampleTree
+                    |> Expect.equal []
+        ]
+
+
+isAncestorOfTests : Test
+isAncestorOfTests =
+    describe "isAncestorOf"
+        [ test "root is ancestor of grandchild" <|
+            \() ->
+                isAncestorOf "root" "grandchild1" sampleTree
+                    |> Expect.equal True
+        , test "child1 is ancestor of grandchild1" <|
+            \() ->
+                isAncestorOf "child1" "grandchild1" sampleTree
+                    |> Expect.equal True
+        , test "grandchild is not ancestor of root" <|
+            \() ->
+                isAncestorOf "grandchild1" "root" sampleTree
+                    |> Expect.equal False
+        , test "sibling is not ancestor" <|
+            \() ->
+                isAncestorOf "child1" "child2" sampleTree
+                    |> Expect.equal False
+        , test "node is not ancestor of itself" <|
+            \() ->
+                isAncestorOf "child1" "child1" sampleTree
+                    |> Expect.equal False
+        ]
+
+
+nodeDepthTests : Test
+nodeDepthTests =
+    describe "nodeDepth"
+        [ test "root is at depth 0" <|
+            \() ->
+                nodeDepth "root" sampleTree
+                    |> Expect.equal (Just 0)
+        , test "child is at depth 1" <|
+            \() ->
+                nodeDepth "child2" sampleTree
+                    |> Expect.equal (Just 1)
+        , test "grandchild is at depth 2" <|
+            \() ->
+                nodeDepth "grandchild3" sampleTree
+                    |> Expect.equal (Just 2)
+        , test "nonexistent returns Nothing" <|
+            \() ->
+                nodeDepth "nonexistent" sampleTree
+                    |> Expect.equal Nothing
+        ]
+
+
+nodeChildrenTests : Test
+nodeChildrenTests =
+    describe "nodeChildren"
+        [ test "root has three children" <|
+            \() ->
+                nodeChildren "root" sampleTree
+                    |> List.map nodeId
+                    |> Expect.equal [ "child1", "child2", "child3" ]
+        , test "leaf has no children" <|
+            \() ->
+                nodeChildren "grandchild1" sampleTree
+                    |> Expect.equal []
+        , test "nonexistent returns empty" <|
+            \() ->
+                nodeChildren "nonexistent" sampleTree
+                    |> Expect.equal []
+        ]

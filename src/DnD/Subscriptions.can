@@ -1,0 +1,202 @@
+module DnD.Subscriptions exposing
+    ( subscriptions
+    , animationSubscription
+    , withSensors
+    )
+
+
+{-| TEA subscriptions for global events during active drag operations.
+
+Automatically subscribes to document-level mouse/touch/keyboard events
+when a drag is active, and animation frame events when springs are
+running. Returns `Sub.none` when idle, preventing unnecessary event
+listeners from degrading performance.
+
+# Subscriptions
+@docs subscriptions, animationSubscription, withSensors
+
+-}
+
+
+import Browser.Events as BrowserEvents
+import DnD exposing (State, Msg(..), DragOperation(..), Point, Delta)
+import DnD.Sensor exposing (Sensor(..))
+import Json.Decode as D
+
+
+{-| Standard subscriptions for a drag-and-drop context.
+
+When a drag is active, subscribes to:
+
+  - `mousemove` on the document (to track pointer position)
+  - `mouseup` on the document (to detect drop)
+  - `keydown` on the document (for Escape to cancel)
+
+When a drop animation is running or lift is in progress,
+subscribes to `requestAnimationFrame` deltas.
+
+When idle, returns `Sub.none`.
+
+    subscriptions DndMsg model.dnd
+-}
+subscriptions : (Msg id -> msg) -> State id -> Sub msg
+subscriptions toMsg state =
+    case state.operation of
+        Dragging _ ->
+            Sub.batch
+                [ BrowserEvents.onMouseMove
+                    (D.map2 (\x y -> toMsg (MoveDrag { x = x, y = y }))
+                        (D.field "clientX" D.float)
+                        (D.field "clientY" D.float)
+                    )
+                , BrowserEvents.onMouseUp
+                    (D.succeed (toMsg EndDrag))
+                , BrowserEvents.onKeyDown
+                    (escapeDecoder toMsg)
+                , animFrameIfNeeded toMsg state
+                ]
+
+        NotDragging ->
+            animFrameIfNeeded toMsg state
+
+
+{-| Subscribe to animation frame deltas when animations are running.
+
+Use this when you manage your own event subscriptions but still need
+animation frame ticks for spring-based drop animations and lift effects.
+
+    animationSubscription AnimTick model.dnd
+-}
+animationSubscription : (Float -> msg) -> State id -> Sub msg
+animationSubscription toMsg state =
+    if DnD.isAnimating state then
+        BrowserEvents.onAnimationFrameDelta toMsg
+
+    else
+        Sub.none
+
+
+{-| Subscriptions with sensor-specific event handling.
+
+Builds subscriptions based on the provided sensor list. Each sensor
+type contributes its own set of event listeners:
+
+  - `Pointer`: mousemove + mouseup
+  - `Touch`: touchmove + touchend
+  - `Keyboard`: keydown for arrow keys and escape
+
+    withSensors DnD.Sensor.defaults DndMsg model.dnd
+-}
+withSensors : List (Sensor id) -> (Msg id -> msg) -> State id -> Sub msg
+withSensors sensors toMsg state =
+    case state.operation of
+        NotDragging ->
+            animFrameIfNeeded toMsg state
+
+        Dragging _ ->
+            Sub.batch
+                (List.concatMap (sensorSubscriptions toMsg) sensors
+                    ++ [ animFrameIfNeeded toMsg state ]
+                )
+
+
+
+-- INTERNAL HELPERS
+
+
+{-| Subscribe to animation frames only when animations are active. -}
+animFrameIfNeeded : (Msg id -> msg) -> State id -> Sub msg
+animFrameIfNeeded toMsg state =
+    if DnD.isAnimating state then
+        BrowserEvents.onAnimationFrameDelta
+            (\dt -> toMsg (AnimationTick dt))
+
+    else
+        Sub.none
+
+
+{-| Decode the Escape key from a keydown event.
+
+Returns CancelDrag when Escape is pressed, fails the decoder for
+any other key so the subscription ignores non-escape key presses.
+-}
+escapeDecoder : (Msg id -> msg) -> D.Decoder msg
+escapeDecoder toMsg =
+    D.field "key" D.string
+        |> D.andThen
+            (\key ->
+                if key == "Escape" then
+                    D.succeed (toMsg CancelDrag)
+
+                else
+                    D.fail "not escape"
+            )
+
+
+{-| Build subscriptions for a single sensor type. -}
+sensorSubscriptions : (Msg id -> msg) -> Sensor id -> List (Sub msg)
+sensorSubscriptions toMsg sensor =
+    case sensor of
+        Pointer _ ->
+            [ BrowserEvents.onMouseMove
+                (D.map2 (\x y -> toMsg (MoveDrag { x = x, y = y }))
+                    (D.field "clientX" D.float)
+                    (D.field "clientY" D.float)
+                )
+            , BrowserEvents.onMouseUp
+                (D.succeed (toMsg EndDrag))
+            ]
+
+        Touch _ ->
+            [ BrowserEvents.onMouseMove
+                (D.map2 (\x y -> toMsg (MoveDrag { x = x, y = y }))
+                    (D.field "clientX" D.float)
+                    (D.field "clientY" D.float)
+                )
+            , BrowserEvents.onMouseUp
+                (D.succeed (toMsg EndDrag))
+            ]
+
+        Keyboard _ ->
+            [ BrowserEvents.onKeyDown
+                (keyboardMoveDecoder toMsg)
+            ]
+
+
+{-| Decode keyboard events into DnD messages for arrow keys, escape,
+enter, and space.
+-}
+keyboardMoveDecoder : (Msg id -> msg) -> D.Decoder msg
+keyboardMoveDecoder toMsg =
+    D.field "key" D.string
+        |> D.andThen
+            (\key ->
+                let
+                    step =
+                        10.0
+                in
+                case key of
+                    "ArrowUp" ->
+                        D.succeed (toMsg (KeyboardMove { x = 0, y = -step }))
+
+                    "ArrowDown" ->
+                        D.succeed (toMsg (KeyboardMove { x = 0, y = step }))
+
+                    "ArrowLeft" ->
+                        D.succeed (toMsg (KeyboardMove { x = -step, y = 0 }))
+
+                    "ArrowRight" ->
+                        D.succeed (toMsg (KeyboardMove { x = step, y = 0 }))
+
+                    "Escape" ->
+                        D.succeed (toMsg CancelDrag)
+
+                    "Enter" ->
+                        D.succeed (toMsg EndDrag)
+
+                    " " ->
+                        D.succeed (toMsg EndDrag)
+
+                    _ ->
+                        D.fail "not a drag key"
+            )

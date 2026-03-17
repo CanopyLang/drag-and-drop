@@ -1,0 +1,79 @@
+module Test.DnD.Overlay exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import List
+import DnD
+import DnD.Overlay exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.Overlay"
+        [ sourceStylesTests
+        ]
+
+
+dummyRect : DnD.Rect
+dummyRect =
+    { x = 0, y = 0, width = 50, height = 50 }
+
+
+makeDraggingState : String -> DnD.State String
+makeDraggingState itemId =
+    DnD.update [] dummyRect
+        (DnD.StartDrag { id = itemId, rect = dummyRect, itemType = "" } { x = 10, y = 10 })
+        DnD.init
+
+
+sourceStylesTests : Test
+sourceStylesTests =
+    describe "sourceStyles"
+        [ test "TransformInPlace always returns empty list when not dragging" <|
+            \() ->
+                sourceStyles TransformInPlace DnD.init "item1"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "TransformInPlace returns empty list even when dragging" <|
+            \() ->
+                sourceStyles TransformInPlace (makeDraggingState "item1") "item1"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "HideOriginal returns empty when not dragging" <|
+            \() ->
+                sourceStyles HideOriginal DnD.init "item1"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "HideOriginal returns styles when dragging matching item" <|
+            \() ->
+                sourceStyles HideOriginal (makeDraggingState "item1") "item1"
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "HideOriginal returns empty for non-matching item" <|
+            \() ->
+                sourceStyles HideOriginal (makeDraggingState "item1") "item2"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "DimOriginal returns empty when not dragging" <|
+            \() ->
+                sourceStyles (DimOriginal 0.5) DnD.init "item1"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "DimOriginal returns styles when dragging matching item" <|
+            \() ->
+                sourceStyles (DimOriginal 0.3) (makeDraggingState "item1") "item1"
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "DimOriginal returns empty for non-matching item" <|
+            \() ->
+                sourceStyles (DimOriginal 0.5) (makeDraggingState "item1") "item2"
+                    |> List.isEmpty
+                    |> Expect.equal True
+        ]

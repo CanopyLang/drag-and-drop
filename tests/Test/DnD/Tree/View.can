@@ -1,0 +1,263 @@
+module Test.DnD.Tree.View exposing (main, tests)
+
+import Basics exposing (..)
+import DnD exposing (..)
+import DnD.Tree exposing (TreeNode(..), TreeConfig, FlatNode, DropPosition(..), flatten, defaultConfig, treeNode)
+import DnD.Tree.View exposing (..)
+import Html exposing (Html, div, text)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+sampleTree : TreeNode String
+sampleTree =
+    treeNode "root"
+        [ treeNode "child-1" [] False
+        , treeNode "child-2"
+            [ treeNode "grandchild-1" [] False ]
+            True
+        ]
+        True
+
+
+flatTree : TreeNode String
+flatTree =
+    treeNode "root"
+        [ treeNode "a" [] False
+        , treeNode "b" [] False
+        , treeNode "c" [] False
+        ]
+        True
+
+
+tests : Test
+tests =
+    describe "DnD.Tree.View"
+        [ viewTreeTests
+        , viewGuideLineTests
+        , viewDropIndicatorTests
+        , viewExpandToggleTests
+        ]
+
+
+viewTreeTests : Test
+viewTreeTests =
+    describe "viewTree"
+        [ test "renders tree without error" <|
+            \() ->
+                let
+                    config =
+                        { toMsg = identity
+                        , nodeId = identity
+                        , renderNode = \_ _ -> div [] [ text "node" ]
+                        , config = DnD.Tree.defaultConfig
+                        , showGuideLines = True
+                        , direction = DnD.Tree.View.LTR
+                        }
+
+                    _ =
+                        viewTree config init sampleTree
+                in
+                Expect.pass
+        , test "renders tree without guide lines" <|
+            \() ->
+                let
+                    config =
+                        { toMsg = identity
+                        , nodeId = identity
+                        , renderNode = \_ _ -> div [] [ text "node" ]
+                        , config = DnD.Tree.defaultConfig
+                        , showGuideLines = False
+                        , direction = DnD.Tree.View.LTR
+                        }
+
+                    _ =
+                        viewTree config init sampleTree
+                in
+                Expect.pass
+        , test "renders RTL tree without error" <|
+            \() ->
+                let
+                    config =
+                        { toMsg = identity
+                        , nodeId = identity
+                        , renderNode = \_ _ -> div [] [ text "node" ]
+                        , config = DnD.Tree.defaultConfig
+                        , showGuideLines = True
+                        , direction = DnD.Tree.View.RTL
+                        }
+
+                    _ =
+                        viewTree config init sampleTree
+                in
+                Expect.pass
+        , test "renders flat tree without error" <|
+            \() ->
+                let
+                    config =
+                        { toMsg = identity
+                        , nodeId = identity
+                        , renderNode = \_ _ -> div [] [ text "node" ]
+                        , config = DnD.Tree.defaultConfig
+                        , showGuideLines = True
+                        , direction = DnD.Tree.View.LTR
+                        }
+
+                    _ =
+                        viewTree config init flatTree
+                in
+                Expect.pass
+        , test "renders leaf node (no children) without error" <|
+            \() ->
+                let
+                    leaf =
+                        treeNode "leaf" [] False
+
+                    config =
+                        { toMsg = identity
+                        , nodeId = identity
+                        , renderNode = \_ _ -> div [] [ text "leaf" ]
+                        , config = DnD.Tree.defaultConfig
+                        , showGuideLines = True
+                        , direction = DnD.Tree.View.LTR
+                        }
+
+                    _ =
+                        viewTree config init leaf
+                in
+                Expect.pass
+        ]
+
+
+viewGuideLineTests : Test
+viewGuideLineTests =
+    describe "viewGuideLine"
+        [ test "renders at depth 0" <|
+            \() ->
+                let
+                    _ =
+                        viewGuideLine 24.0 0 False
+                in
+                Expect.pass
+        , test "renders at depth 3 as last child" <|
+            \() ->
+                let
+                    _ =
+                        viewGuideLine 24.0 3 True
+                in
+                Expect.pass
+        , test "renders at depth 1 not last child" <|
+            \() ->
+                let
+                    _ =
+                        viewGuideLine 24.0 1 False
+                in
+                Expect.pass
+        , test "renders with custom indent" <|
+            \() ->
+                let
+                    _ =
+                        viewGuideLine 48.0 2 True
+                in
+                Expect.pass
+        ]
+
+
+viewDropIndicatorTests : Test
+viewDropIndicatorTests =
+    describe "viewDropIndicator"
+        [ test "renders Before indicator" <|
+            \() ->
+                let
+                    _ =
+                        viewDropIndicator Before 24.0 1
+                in
+                Expect.pass
+        , test "renders After indicator" <|
+            \() ->
+                let
+                    _ =
+                        viewDropIndicator After 24.0 2
+                in
+                Expect.pass
+        , test "renders Inside indicator" <|
+            \() ->
+                let
+                    _ =
+                        viewDropIndicator Inside 24.0 0
+                in
+                Expect.pass
+        , test "renders Before at depth 0" <|
+            \() ->
+                let
+                    _ =
+                        viewDropIndicator Before 24.0 0
+                in
+                Expect.pass
+        , test "renders Inside at deep depth" <|
+            \() ->
+                let
+                    _ =
+                        viewDropIndicator Inside 24.0 5
+                in
+                Expect.pass
+        ]
+
+
+viewExpandToggleTests : Test
+viewExpandToggleTests =
+    describe "viewExpandToggle"
+        [ test "renders expanded toggle" <|
+            \() ->
+                let
+                    flat =
+                        { id = "node-1"
+                        , depth = 0
+                        , parentId = Nothing
+                        , hasChildren = True
+                        , isExpanded = True
+                        , isLastChild = False
+                        }
+
+                    _ =
+                        viewExpandToggle identity flat
+                in
+                Expect.pass
+        , test "renders collapsed toggle" <|
+            \() ->
+                let
+                    flat =
+                        { id = "node-2"
+                        , depth = 1
+                        , parentId = Just "node-1"
+                        , hasChildren = True
+                        , isExpanded = False
+                        , isLastChild = True
+                        }
+
+                    _ =
+                        viewExpandToggle identity flat
+                in
+                Expect.pass
+        , test "renders leaf node toggle" <|
+            \() ->
+                let
+                    flat =
+                        { id = "leaf"
+                        , depth = 2
+                        , parentId = Just "node-2"
+                        , hasChildren = False
+                        , isExpanded = False
+                        , isLastChild = True
+                        }
+
+                    _ =
+                        viewExpandToggle identity flat
+                in
+                Expect.pass
+        ]

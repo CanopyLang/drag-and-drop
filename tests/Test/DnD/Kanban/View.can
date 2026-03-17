@@ -1,0 +1,187 @@
+module Test.DnD.Kanban.View exposing (main, tests)
+
+import Basics exposing (..)
+import DnD exposing (..)
+import DnD.Kanban exposing (Board, Column, board, emptyColumn)
+import DnD.Kanban.View exposing (..)
+import DnD.Sortable exposing (SortableItemState)
+import Html exposing (Html, div, text)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+sampleBoard : Board String String
+sampleBoard =
+    board
+        [ { id = "todo", title = "To Do", cards = [ "card-1", "card-2" ], wipLimit = Nothing }
+        , { id = "doing", title = "Doing", cards = [ "card-3" ], wipLimit = Just 3 }
+        , { id = "done", title = "Done", cards = [], wipLimit = Nothing }
+        ]
+
+
+emptyBoard : Board String String
+emptyBoard =
+    board
+        [ emptyColumn "backlog" "Backlog"
+        , emptyColumn "todo" "To Do"
+        ]
+
+
+singleColumnBoard : Board String String
+singleColumnBoard =
+    board
+        [ { id = "only", title = "Only", cards = [ "c1", "c2", "c3" ], wipLimit = Just 5 }
+        ]
+
+
+makeConfig : Direction -> KanbanViewConfig String String (DnD.Msg String)
+makeConfig dir =
+    { toMsg = identity
+    , columnId = identity
+    , cardId = identity
+    , renderCard = \_ _ -> div [] [ text "card" ]
+    , renderColumnHeader = \col -> div [] [ text col.title ]
+    , emptyColumnView = \_ -> div [] [ text "empty" ]
+    , direction = dir
+    }
+
+
+tests : Test
+tests =
+    describe "DnD.Kanban.View"
+        [ viewBoardTests
+        , viewWipIndicatorTests
+        , viewColumnTests
+        , viewCardTests
+        ]
+
+
+viewBoardTests : Test
+viewBoardTests =
+    describe "viewBoard"
+        [ test "renders board without error" <|
+            \() ->
+                let
+                    _ =
+                        viewBoard (makeConfig LTR) init sampleBoard
+                in
+                Expect.pass
+        , test "renders RTL board without error" <|
+            \() ->
+                let
+                    _ =
+                        viewBoard (makeConfig RTL) init sampleBoard
+                in
+                Expect.pass
+        , test "renders empty board without error" <|
+            \() ->
+                let
+                    _ =
+                        viewBoard (makeConfig LTR) init emptyBoard
+                in
+                Expect.pass
+        , test "renders single column board without error" <|
+            \() ->
+                let
+                    _ =
+                        viewBoard (makeConfig LTR) init singleColumnBoard
+                in
+                Expect.pass
+        ]
+
+
+viewWipIndicatorTests : Test
+viewWipIndicatorTests =
+    describe "viewWipIndicator"
+        [ test "renders for column with WIP limit" <|
+            \() ->
+                let
+                    col =
+                        { id = "doing", title = "Doing", cards = [ "card-1" ], wipLimit = Just 3 }
+
+                    _ =
+                        viewWipIndicator col
+                in
+                Expect.pass
+        , test "renders for column without WIP limit" <|
+            \() ->
+                let
+                    col =
+                        { id = "todo", title = "To Do", cards = [ "a", "b" ], wipLimit = Nothing }
+
+                    _ =
+                        viewWipIndicator col
+                in
+                Expect.pass
+        , test "renders for empty column with WIP limit" <|
+            \() ->
+                let
+                    col =
+                        { id = "empty", title = "Empty", cards = [], wipLimit = Just 5 }
+
+                    _ =
+                        viewWipIndicator col
+                in
+                Expect.pass
+        , test "renders for column at WIP limit" <|
+            \() ->
+                let
+                    col =
+                        { id = "full", title = "Full", cards = [ "a", "b", "c" ], wipLimit = Just 3 }
+
+                    _ =
+                        viewWipIndicator col
+                in
+                Expect.pass
+        ]
+
+
+viewColumnTests : Test
+viewColumnTests =
+    describe "viewColumn"
+        [ test "renders column without error" <|
+            \() ->
+                let
+                    col =
+                        { id = "todo", title = "To Do", cards = [ "c1" ], wipLimit = Nothing }
+
+                    _ =
+                        viewColumn (makeConfig LTR) init col
+                in
+                Expect.pass
+        , test "renders empty column without error" <|
+            \() ->
+                let
+                    col =
+                        emptyColumn "empty" "Empty"
+
+                    _ =
+                        viewColumn (makeConfig LTR) init col
+                in
+                Expect.pass
+        ]
+
+
+viewCardTests : Test
+viewCardTests =
+    describe "viewCard"
+        [ test "renders card without error" <|
+            \() ->
+                let
+                    _ =
+                        viewCard (makeConfig LTR) init "card-1"
+                in
+                Expect.pass
+        , test "renders card in init state (not dragging)" <|
+            \() ->
+                let
+                    _ =
+                        viewCard (makeConfig LTR) init "card-abc"
+                in
+                Expect.pass
+        ]

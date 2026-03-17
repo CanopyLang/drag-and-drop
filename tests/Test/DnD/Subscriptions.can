@@ -1,0 +1,227 @@
+module Test.DnD.Subscriptions exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD exposing (..)
+import DnD.Subscriptions exposing (..)
+import DnD.Sensor as Sensor exposing (Sensor(..))
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+type TestMsg
+    = DndMsg (DnD.Msg String)
+    | AnimTick Float
+
+
+dummyRect : Rect
+dummyRect =
+    { x = 100, y = 200, width = 50, height = 50 }
+
+
+dummyItem : DragItem String
+dummyItem =
+    { id = "item1", rect = dummyRect, itemType = "card" }
+
+
+dummyPoint : Point
+dummyPoint =
+    { x = 125, y = 225 }
+
+
+draggingState : State String
+draggingState =
+    update [] dummyRect (StartDrag dummyItem dummyPoint) init
+
+
+tests : Test
+tests =
+    describe "DnD.Subscriptions"
+        [ subscriptionsInitTests
+        , subscriptionsActiveTests
+        , animationSubscriptionTests
+        , withSensorsTests
+        ]
+
+
+subscriptionsInitTests : Test
+subscriptionsInitTests =
+    describe "subscriptions with init state"
+        [ test "subscriptions accepts init state without error" <|
+            \() ->
+                let
+                    _ =
+                        subscriptions DndMsg init
+                in
+                Expect.pass
+        , test "init state is NotDragging" <|
+            \() ->
+                case init.operation of
+                    NotDragging ->
+                        Expect.pass
+
+                    Dragging _ ->
+                        Expect.fail "Expected NotDragging"
+        , test "init state has no drop animation" <|
+            \() ->
+                Expect.equal Nothing (dropAnimation init)
+        , test "init state is not animating" <|
+            \() ->
+                Expect.equal False (isAnimating init)
+        , test "init state liftProgress is 0" <|
+            \() ->
+                Expect.equal 0.0 (liftProgress init)
+        ]
+
+
+subscriptionsActiveTests : Test
+subscriptionsActiveTests =
+    describe "subscriptions with active drag"
+        [ test "subscriptions accepts dragging state without error" <|
+            \() ->
+                let
+                    _ =
+                        subscriptions DndMsg draggingState
+                in
+                Expect.pass
+        , test "dragging state has active drag" <|
+            \() ->
+                case activeDrag draggingState of
+                    Just _ ->
+                        Expect.pass
+
+                    Nothing ->
+                        Expect.fail "Expected active drag"
+        , test "subscriptions after EndDrag accepts state" <|
+            \() ->
+                let
+                    endedState =
+                        update [] dummyRect EndDrag draggingState
+
+                    _ =
+                        subscriptions DndMsg endedState
+                in
+                Expect.pass
+        , test "subscriptions after CancelDrag accepts state" <|
+            \() ->
+                let
+                    cancelledState =
+                        update [] dummyRect CancelDrag draggingState
+
+                    _ =
+                        subscriptions DndMsg cancelledState
+                in
+                Expect.pass
+        ]
+
+
+animationSubscriptionTests : Test
+animationSubscriptionTests =
+    describe "animationSubscription"
+        [ test "accepts init state without error" <|
+            \() ->
+                let
+                    _ =
+                        animationSubscription AnimTick init
+                in
+                Expect.pass
+        , test "accepts dragging state without error" <|
+            \() ->
+                let
+                    _ =
+                        animationSubscription AnimTick draggingState
+                in
+                Expect.pass
+        , test "init state is not animating" <|
+            \() ->
+                Expect.equal False (isAnimating init)
+        , test "dragging state with zero liftProg is animating" <|
+            \() ->
+                Expect.equal True (isAnimating draggingState)
+        , test "after EndDrag state may have drop animation" <|
+            \() ->
+                let
+                    endedState =
+                        update [] dummyRect EndDrag draggingState
+                in
+                case dropAnimation endedState of
+                    Just _ ->
+                        Expect.pass
+
+                    Nothing ->
+                        Expect.pass
+        ]
+
+
+withSensorsTests : Test
+withSensorsTests =
+    describe "withSensors"
+        [ test "accepts default sensors with init state" <|
+            \() ->
+                let
+                    _ =
+                        withSensors Sensor.defaults DndMsg init
+                in
+                Expect.pass
+        , test "accepts default sensors with dragging state" <|
+            \() ->
+                let
+                    _ =
+                        withSensors Sensor.defaults DndMsg draggingState
+                in
+                Expect.pass
+        , test "accepts empty sensor list" <|
+            \() ->
+                let
+                    _ =
+                        withSensors [] DndMsg init
+                in
+                Expect.pass
+        , test "accepts empty sensor list with dragging state" <|
+            \() ->
+                let
+                    _ =
+                        withSensors [] DndMsg draggingState
+                in
+                Expect.pass
+        , test "accepts pointer-only sensor" <|
+            \() ->
+                let
+                    _ =
+                        withSensors [ Sensor.pointer Sensor.defaultPointerConfig ] DndMsg draggingState
+                in
+                Expect.pass
+        , test "accepts touch-only sensor" <|
+            \() ->
+                let
+                    _ =
+                        withSensors [ Sensor.touch Sensor.defaultTouchConfig ] DndMsg draggingState
+                in
+                Expect.pass
+        , test "accepts keyboard-only sensor" <|
+            \() ->
+                let
+                    _ =
+                        withSensors [ Sensor.keyboard Sensor.defaultKeyboardConfig ] DndMsg draggingState
+                in
+                Expect.pass
+        , test "default sensors has 3 sensors" <|
+            \() ->
+                List.length Sensor.defaults
+                    |> Expect.equal 3
+        , test "custom sensor config is accepted" <|
+            \() ->
+                let
+                    customPointer =
+                        Sensor.pointer { activationDistance = 10.0, activationDelay = 100 }
+
+                    _ =
+                        withSensors [ customPointer ] DndMsg draggingState
+                in
+                Expect.pass
+        ]

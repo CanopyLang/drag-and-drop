@@ -1,0 +1,338 @@
+module DnD.Hitbox exposing
+    ( Edge(..)
+    , Zone(..)
+    , closestEdge
+    , closestEdgeFiltered
+    , zone
+    , zoneWithThresholds
+    , attachClosestEdge
+    , extractClosestEdge
+    )
+
+
+{-| Fine-grained hit detection within drop targets.
+
+When a dragged item hovers over a drop target, you often need to know
+*where* within that target the cursor sits — not just that it is over
+the target. This module answers two questions:
+
+1. **Which edge is the cursor closest to?** Useful for insertion indicators
+   that snap to the top, bottom, left, or right of a target.
+
+2. **Which vertical zone is the cursor in?** Useful for distinguishing
+   "drop above", "drop inside", and "drop below" in tree-style UIs where
+   the top and bottom bands trigger reordering and the center band
+   triggers nesting.
+
+# Edge Detection
+@docs Edge, closestEdge, closestEdgeFiltered
+
+# Zone Detection
+@docs Zone, zone, zoneWithThresholds
+
+# Data Encoding
+@docs attachClosestEdge, extractClosestEdge
+
+-}
+
+
+{-| The four edges of a rectangle.
+
+Used as the result of `closestEdge` to indicate which side of a drop
+target the cursor is nearest to.
+-}
+type Edge
+    = Top
+    | Bottom
+    | Left
+    | Right
+
+
+{-| Vertical zones within a drop target.
+
+The default split is 25% top, 50% center, 25% bottom, which provides
+a comfortable band for "drop inside" while keeping narrow bands at the
+edges for reordering.
+-}
+type Zone
+    = TopQuarter
+    | BottomQuarter
+    | Center
+
+
+{-| A point with x and y coordinates. -}
+type alias Point =
+    { x : Float
+    , y : Float
+    }
+
+
+{-| A rectangle defined by its top-left position and dimensions. -}
+type alias Rect =
+    { x : Float
+    , y : Float
+    , width : Float
+    , height : Float
+    }
+
+
+{-| Determine which edge of a rectangle a point is closest to.
+
+Calculates the perpendicular distance from the point to each of the
+four edges and returns the edge with the smallest distance. When the
+point lies outside the rectangle, distances are measured the same way
+(they may be negative on the far side, but the comparison still yields
+the geometrically closest edge).
+
+    closestEdge { x = 55, y = 12 } { x = 50, y = 10, width = 100, height = 80 }
+    -- Top
+
+-}
+closestEdge : Point -> Rect -> Edge
+closestEdge point rect =
+    let
+        distTop =
+            abs (point.y - rect.y)
+
+        distBottom =
+            abs (rect.y + rect.height - point.y)
+
+        distLeft =
+            abs (point.x - rect.x)
+
+        distRight =
+            abs (rect.x + rect.width - point.x)
+    in
+    pickSmallest
+        [ ( Top, distTop )
+        , ( Bottom, distBottom )
+        , ( Left, distLeft )
+        , ( Right, distRight )
+        ]
+        Top
+
+
+{-| Like `closestEdge`, but only considers the edges in the given list.
+
+This is useful when you want to constrain insertion to certain
+directions — for example, a horizontal list only cares about `Left`
+and `Right`.
+
+If the list is empty, defaults to `Top`.
+
+    closestEdgeFiltered [ Left, Right ] { x = 55, y = 12 } { x = 50, y = 10, width = 100, height = 80 }
+    -- Left
+
+-}
+closestEdgeFiltered : List Edge -> Point -> Rect -> Edge
+closestEdgeFiltered allowedEdges point rect =
+    let
+        distTop =
+            abs (point.y - rect.y)
+
+        distBottom =
+            abs (rect.y + rect.height - point.y)
+
+        distLeft =
+            abs (point.x - rect.x)
+
+        distRight =
+            abs (rect.x + rect.width - point.x)
+
+        allDistances =
+            [ ( Top, distTop )
+            , ( Bottom, distBottom )
+            , ( Left, distLeft )
+            , ( Right, distRight )
+            ]
+
+        filtered =
+            List.filter (\( edge, _ ) -> List.member edge allowedEdges) allDistances
+    in
+    case filtered of
+        [] ->
+            Top
+
+        _ ->
+            pickSmallest filtered Top
+
+
+{-| Determine which vertical zone of a rectangle a point falls in.
+
+Uses a default 25%/50%/25% vertical split:
+
+  - **TopQuarter**: the top 25% of the rectangle
+  - **Center**: the middle 50%
+  - **BottomQuarter**: the bottom 25%
+
+When the point is above the rectangle it returns `TopQuarter`; when
+below, `BottomQuarter`.
+
+    zone { x = 50, y = 15 } { x = 0, y = 0, width = 100, height = 100 }
+    -- TopQuarter
+
+-}
+zone : Point -> Rect -> Zone
+zone point rect =
+    zoneWithThresholds 0.25 0.25 point rect
+
+
+{-| Like `zone` but with configurable threshold ratios.
+
+The first argument is the ratio of the rectangle's height devoted to
+the top zone; the second is the ratio for the bottom zone. The center
+zone occupies whatever remains.
+
+Thresholds are clamped to the range [0, 1] individually, and if their
+sum exceeds 1 the center zone has zero height (top and bottom share
+the space proportionally).
+
+    zoneWithThresholds 0.3 0.3 { x = 50, y = 15 } { x = 0, y = 0, width = 100, height = 100 }
+    -- TopQuarter
+
+-}
+zoneWithThresholds : Float -> Float -> Point -> Rect -> Zone
+zoneWithThresholds topRatio bottomRatio point rect =
+    let
+        clampedTop =
+            clamp 0 1 topRatio
+
+        clampedBottom =
+            clamp 0 1 bottomRatio
+
+        relativeY =
+            (point.y - rect.y) / rect.height
+
+        safeRelativeY =
+            clamp 0 1 relativeY
+    in
+    if rect.height <= 0 then
+        Center
+
+    else if safeRelativeY < clampedTop then
+        TopQuarter
+
+    else if safeRelativeY >= 1.0 - clampedBottom then
+        BottomQuarter
+
+    else
+        Center
+
+
+{-| Encode an edge into a key-value data dictionary.
+
+Adds the pair `("closestEdge", <edge string>)` to the given list.
+If the key already exists it is not deduplicated — consumers should
+use `extractClosestEdge` which finds the first match.
+
+    attachClosestEdge Top []
+    -- [ ( "closestEdge", "top" ) ]
+
+-}
+attachClosestEdge : Edge -> List ( String, String ) -> List ( String, String )
+attachClosestEdge edge data_ =
+    ( "closestEdge", edgeToString edge ) :: data_
+
+
+{-| Extract an edge from a key-value data dictionary.
+
+Looks up the first entry with key `"closestEdge"` and parses its
+value. Returns `Nothing` if the key is missing or the value is not a
+recognized edge string.
+
+    extractClosestEdge [ ( "closestEdge", "bottom" ) ]
+    -- Just Bottom
+
+    extractClosestEdge []
+    -- Nothing
+
+-}
+extractClosestEdge : List ( String, String ) -> Maybe Edge
+extractClosestEdge data_ =
+    case findValue "closestEdge" data_ of
+        Nothing ->
+            Nothing
+
+        Just value ->
+            edgeFromString value
+
+
+
+-- INTERNAL HELPERS
+
+
+edgeToString : Edge -> String
+edgeToString edge =
+    case edge of
+        Top ->
+            "top"
+
+        Bottom ->
+            "bottom"
+
+        Left ->
+            "left"
+
+        Right ->
+            "right"
+
+
+edgeFromString : String -> Maybe Edge
+edgeFromString str =
+    case str of
+        "top" ->
+            Just Top
+
+        "bottom" ->
+            Just Bottom
+
+        "left" ->
+            Just Left
+
+        "right" ->
+            Just Right
+
+        _ ->
+            Nothing
+
+
+{-| Find the first value associated with a key in an association list. -}
+findValue : String -> List ( String, String ) -> Maybe String
+findValue key pairs =
+    case pairs of
+        [] ->
+            Nothing
+
+        ( k, v ) :: rest ->
+            if k == key then
+                Just v
+
+            else
+                findValue key rest
+
+
+{-| Pick the entry with the smallest Float from a non-empty list of
+tagged distances. Falls back to `fallback` when the list is empty.
+-}
+pickSmallest : List ( Edge, Float ) -> Edge -> Edge
+pickSmallest candidates fallback =
+    case candidates of
+        [] ->
+            fallback
+
+        ( firstEdge, firstDist ) :: rest ->
+            pickSmallestHelp firstEdge firstDist rest
+
+
+pickSmallestHelp : Edge -> Float -> List ( Edge, Float ) -> Edge
+pickSmallestHelp bestEdge bestDist candidates =
+    case candidates of
+        [] ->
+            bestEdge
+
+        ( edge, dist ) :: rest ->
+            if dist < bestDist then
+                pickSmallestHelp edge dist rest
+
+            else
+                pickSmallestHelp bestEdge bestDist rest

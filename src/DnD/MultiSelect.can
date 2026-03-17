@@ -1,0 +1,630 @@
+module DnD.MultiSelect exposing
+    ( Selection
+    , SelectionMode(..)
+    , LassoRect
+    , init
+    , select
+    , toggle
+    , rangeSelect
+    , selectAll
+    , clearSelection
+    , isSelected
+    , selectedItems
+    , selectedCount
+    , hasSelection
+    , lasso
+    , lassoSelect
+    , updateLasso
+    , endLasso
+    , activeLasso
+    , reorderSelected
+    , moveSelectedBetween
+    )
+
+
+{-| Multi-item selection for drag-and-drop interfaces.
+
+Supports single selection, ctrl+click toggling, shift+click range
+selection, rectangular lasso selection, and bulk reordering of
+selected items across containers.
+
+# Selection State
+@docs Selection, init
+
+# Single & Toggle Selection
+@docs select, toggle
+
+# Range & Bulk Selection
+@docs rangeSelect, selectAll, clearSelection
+
+# Querying
+@docs isSelected, selectedItems, selectedCount, hasSelection
+
+# Lasso Selection
+@docs SelectionMode, LassoRect, lasso, updateLasso, lassoSelect, endLasso, activeLasso
+
+# Reordering
+@docs reorderSelected, moveSelectedBetween
+
+-}
+
+
+{-| The selection state, tracking which items are selected, the anchor
+point for range selection, and any active lasso rectangle.
+
+  - `selected`: The list of currently selected item identifiers.
+  - `anchor`: The anchor item for shift+click range selection.
+      When the user clicks an item without shift, this is set to that item.
+      Shift+clicking then selects the range from anchor to the clicked item.
+  - `lasso`: An active lasso rectangle, if the user is currently drawing one.
+-}
+type alias Selection id =
+    { selected : List id
+    , anchor : Maybe id
+    , lasso : Maybe LassoRect
+    }
+
+
+{-| Determines how items are tested against the lasso rectangle.
+
+  - `Contained`: The item's bounding rect must be fully inside the lasso.
+  - `Intersected`: The item's bounding rect must overlap the lasso at all.
+  - `CenterPoint`: The center of the item's bounding rect must be inside the lasso.
+-}
+type SelectionMode
+    = Contained
+    | Intersected
+    | CenterPoint
+
+
+{-| A rectangle defined by the start and current pointer positions.
+
+The start point is set when the lasso begins, and the current point
+tracks the pointer as it moves. The rectangle may have the start
+coordinates greater than the current coordinates (the user dragged
+up and/or left), so `normalizeLasso` converts it to a proper rect.
+-}
+type alias LassoRect =
+    { startX : Float
+    , startY : Float
+    , currentX : Float
+    , currentY : Float
+    }
+
+
+{-| A rectangle with position and dimensions, used for item bounding boxes
+and normalized lasso regions.
+-}
+type alias Rect =
+    { x : Float
+    , y : Float
+    , width : Float
+    , height : Float
+    }
+
+
+{-| Create an empty selection with no items selected, no anchor, and no lasso.
+
+    init == { selected = [], anchor = Nothing, lasso = Nothing }
+-}
+init : Selection id
+init =
+    { selected = []
+    , anchor = Nothing
+    , lasso = Nothing
+    }
+
+
+{-| Select a single item, clearing all other selections.
+
+Sets the anchor to the selected item for subsequent range selections.
+
+    select "item-2" selection
+    -- { selected = [ "item-2" ], anchor = Just "item-2", lasso = Nothing }
+-}
+select : id -> Selection id -> Selection id
+select itemId selection =
+    { selection
+        | selected = [ itemId ]
+        , anchor = Just itemId
+    }
+
+
+{-| Toggle an item's selection state without affecting other selections.
+
+Use this for ctrl+click behavior. If the item is already selected, it
+is removed. If not selected, it is added. The anchor is updated to the
+toggled item.
+
+    toggle "b" { selected = [ "a", "b" ], anchor = Just "a", lasso = Nothing }
+    -- { selected = [ "a" ], anchor = Just "b", lasso = Nothing }
+-}
+toggle : id -> Selection id -> Selection id
+toggle itemId selection =
+    if isSelected itemId selection then
+        { selection
+            | selected = removeItem itemId selection.selected
+            , anchor = Just itemId
+        }
+
+    else
+        { selection
+            | selected = selection.selected ++ [ itemId ]
+            , anchor = Just itemId
+        }
+
+
+{-| Select a range of items from the anchor to the target item.
+
+Given the full ordered list of items, selects all items between the
+current anchor and the target (inclusive). If there is no anchor, only
+the target is selected. The anchor is preserved so further range
+selections extend from the same origin.
+
+    rangeSelect "d"
+        [ "a", "b", "c", "d", "e" ]
+        { selected = [ "b" ], anchor = Just "b", lasso = Nothing }
+    -- { selected = [ "b", "c", "d" ], anchor = Just "b", lasso = Nothing }
+-}
+rangeSelect : id -> List id -> Selection id -> Selection id
+rangeSelect target allItems selection =
+    case selection.anchor of
+        Nothing ->
+            select target selection
+
+        Just anchorId ->
+            { selection
+                | selected = extractRange anchorId target allItems
+            }
+
+
+{-| Select all items in the given list.
+
+    selectAll [ "a", "b", "c" ] selection
+    -- { selected = [ "a", "b", "c" ], ... }
+-}
+selectAll : List id -> Selection id -> Selection id
+selectAll allItems selection =
+    { selection | selected = allItems }
+
+
+{-| Clear all selections, resetting to an empty state.
+
+The anchor and lasso are also cleared.
+
+    clearSelection selection
+    -- { selected = [], anchor = Nothing, lasso = Nothing }
+-}
+clearSelection : Selection id -> Selection id
+clearSelection _ =
+    init
+
+
+{-| Check whether a specific item is currently selected.
+
+    isSelected "b" { selected = [ "a", "b", "c" ], anchor = Nothing, lasso = Nothing }
+    -- True
+-}
+isSelected : id -> Selection id -> Bool
+isSelected itemId selection =
+    List.member itemId selection.selected
+
+
+{-| Get the list of all currently selected items.
+
+    selectedItems { selected = [ "a", "c" ], anchor = Nothing, lasso = Nothing }
+    -- [ "a", "c" ]
+-}
+selectedItems : Selection id -> List id
+selectedItems selection =
+    selection.selected
+
+
+{-| Count the number of currently selected items.
+
+    selectedCount { selected = [ "a", "b" ], anchor = Nothing, lasso = Nothing }
+    -- 2
+-}
+selectedCount : Selection id -> Int
+selectedCount selection =
+    List.length selection.selected
+
+
+{-| Check whether any items are selected.
+
+    hasSelection { selected = [], anchor = Nothing, lasso = Nothing }
+    -- False
+
+    hasSelection { selected = [ "a" ], anchor = Nothing, lasso = Nothing }
+    -- True
+-}
+hasSelection : Selection id -> Bool
+hasSelection selection =
+    not (List.isEmpty selection.selected)
+
+
+{-| Begin a lasso selection at the given coordinates.
+
+This sets the start and current position of the lasso to the same point.
+Call `updateLasso` as the pointer moves, then `lassoSelect` and `endLasso`
+when the pointer is released.
+
+    lasso 100 200 selection
+-}
+lasso : Float -> Float -> Selection id -> Selection id
+lasso x y selection =
+    { selection
+        | lasso =
+            Just
+                { startX = x
+                , startY = y
+                , currentX = x
+                , currentY = y
+                }
+    }
+
+
+{-| Update the current position of an active lasso.
+
+If no lasso is active, this is a no-op.
+
+    updateLasso 150 250 selection
+-}
+updateLasso : Float -> Float -> Selection id -> Selection id
+updateLasso x y selection =
+    case selection.lasso of
+        Nothing ->
+            selection
+
+        Just lassoRect ->
+            { selection
+                | lasso =
+                    Just
+                        { lassoRect
+                            | currentX = x
+                            , currentY = y
+                        }
+            }
+
+
+{-| Compute which items fall within the active lasso rectangle.
+
+Uses the given `SelectionMode` to determine the containment test:
+
+  - `Contained`: The item rect must be fully inside the lasso.
+  - `Intersected`: The item rect must overlap the lasso at all.
+  - `CenterPoint`: The center of the item rect must be inside the lasso.
+
+Items that pass the test are added to the selection. If no lasso is
+active, the selection is returned unchanged.
+
+    lassoSelect Contained
+        [ { id = "a", rect = { x = 10, y = 10, width = 20, height = 20 } }
+        , { id = "b", rect = { x = 50, y = 50, width = 20, height = 20 } }
+        ]
+        selection
+-}
+lassoSelect : SelectionMode -> List { id : id, rect : Rect } -> Selection id -> Selection id
+lassoSelect mode items selection =
+    case selection.lasso of
+        Nothing ->
+            selection
+
+        Just lassoRect ->
+            let
+                normalizedRect =
+                    normalizeLasso lassoRect
+
+                matched =
+                    List.filterMap (testItem mode normalizedRect) items
+            in
+            { selection | selected = matched }
+
+
+{-| End the lasso selection, clearing the lasso rectangle.
+
+The selected items computed by `lassoSelect` are preserved. Call
+`lassoSelect` before `endLasso` to finalize the selection.
+
+    endLasso selection
+-}
+endLasso : Selection id -> Selection id
+endLasso selection =
+    { selection | lasso = Nothing }
+
+
+{-| Get the active lasso rectangle, if any.
+
+    activeLasso selection
+    -- Just { startX = 100, startY = 200, currentX = 150, currentY = 250 }
+-}
+activeLasso : Selection id -> Maybe LassoRect
+activeLasso selection =
+    selection.lasso
+
+
+{-| Move all selected items as a group to the drop target position
+within a single list, preserving the relative order of selected items.
+
+The selected items are removed from their current positions and inserted
+as a contiguous group at the position of the drop target.
+
+    reorderSelected
+        { selected = [ "b", "d" ], anchor = Nothing, lasso = Nothing }
+        "e"
+        [ "a", "b", "c", "d", "e", "f" ]
+    -- [ "a", "c", "e", "b", "d", "f" ]
+-}
+reorderSelected : Selection id -> id -> List id -> List id
+reorderSelected selection dropTarget items =
+    let
+        selectedSet =
+            selection.selected
+
+        selectedInOrder =
+            List.filter (\item -> List.member item selectedSet) items
+
+        withoutSelected =
+            List.filter (\item -> not (List.member item selectedSet)) items
+
+        insertIndex =
+            findIndex dropTarget withoutSelected
+                |> Maybe.withDefault (List.length withoutSelected)
+                |> (\idx -> idx + 1)
+    in
+    insertAllAt insertIndex selectedInOrder withoutSelected
+
+
+{-| Move all selected items from one container to another.
+
+The selected items are removed from the `from` list and inserted into
+the `to` list at the position of the `over` item. The relative order
+of the selected items is preserved.
+
+    moveSelectedBetween
+        { selected = [ "b", "c" ], anchor = Nothing, lasso = Nothing }
+        { from = [ "a", "b", "c", "d" ]
+        , to = [ "x", "y", "z" ]
+        , over = "y"
+        }
+    -- { from = [ "a", "d" ], to = [ "x", "b", "c", "y", "z" ] }
+-}
+moveSelectedBetween :
+    Selection id
+    -> { from : List id, to : List id, over : id }
+    -> { from : List id, to : List id }
+moveSelectedBetween selection config =
+    let
+        selectedSet =
+            selection.selected
+
+        selectedInOrder =
+            List.filter (\item -> List.member item selectedSet) config.from
+
+        newFrom =
+            List.filter (\item -> not (List.member item selectedSet)) config.from
+
+        overIndex =
+            findIndex config.over config.to
+                |> Maybe.withDefault (List.length config.to)
+
+        newTo =
+            insertAllAt overIndex selectedInOrder config.to
+    in
+    { from = newFrom
+    , to = newTo
+    }
+
+
+
+-- INTERNAL HELPERS
+
+
+{-| Normalize a lasso rectangle so that width and height are positive.
+
+When the user drags up-left, startX > currentX and/or startY > currentY.
+This converts the two-point lasso into a standard rect with the top-left
+corner at (x, y) and positive width/height.
+-}
+normalizeLasso : LassoRect -> Rect
+normalizeLasso lassoRect =
+    let
+        x =
+            min lassoRect.startX lassoRect.currentX
+
+        y =
+            min lassoRect.startY lassoRect.currentY
+
+        w =
+            abs (lassoRect.currentX - lassoRect.startX)
+
+        h =
+            abs (lassoRect.currentY - lassoRect.startY)
+    in
+    { x = x, y = y, width = w, height = h }
+
+
+{-| Test whether an item matches the lasso based on the selection mode.
+
+Returns `Just id` if the item passes the test, `Nothing` otherwise.
+-}
+testItem : SelectionMode -> Rect -> { id : id, rect : Rect } -> Maybe id
+testItem mode lassoNorm item =
+    if testRect mode lassoNorm item.rect then
+        Just item.id
+
+    else
+        Nothing
+
+
+{-| Test whether an item rect satisfies the selection mode against
+the normalized lasso rect.
+-}
+testRect : SelectionMode -> Rect -> Rect -> Bool
+testRect mode lassoNorm itemRect =
+    case mode of
+        Contained ->
+            rectContainedIn lassoNorm itemRect
+
+        Intersected ->
+            rectsOverlap lassoNorm itemRect
+
+        CenterPoint ->
+            pointInRect (rectCenterPoint itemRect) lassoNorm
+
+
+{-| Check whether the inner rect is fully contained within the outer rect. -}
+rectContainedIn : Rect -> Rect -> Bool
+rectContainedIn outer inner =
+    inner.x >= outer.x
+        && inner.y >= outer.y
+        && inner.x + inner.width <= outer.x + outer.width
+        && inner.y + inner.height <= outer.y + outer.height
+
+
+{-| Check whether two rectangles overlap. -}
+rectsOverlap : Rect -> Rect -> Bool
+rectsOverlap r1 r2 =
+    r1.x < r2.x + r2.width
+        && r1.x + r1.width > r2.x
+        && r1.y < r2.y + r2.height
+        && r1.y + r1.height > r2.y
+
+
+{-| Calculate the center point of a rectangle as a pair of coordinates. -}
+rectCenterPoint : Rect -> { x : Float, y : Float }
+rectCenterPoint rect =
+    { x = rect.x + rect.width / 2.0
+    , y = rect.y + rect.height / 2.0
+    }
+
+
+{-| Check whether a point is inside a rectangle. -}
+pointInRect : { x : Float, y : Float } -> Rect -> Bool
+pointInRect point rect =
+    point.x >= rect.x
+        && point.x <= rect.x + rect.width
+        && point.y >= rect.y
+        && point.y <= rect.y + rect.height
+
+
+{-| Extract the range of items between two ids (inclusive) from an ordered list.
+
+The range is inclusive of both endpoints. If either id is not found,
+an empty list is returned. The range works regardless of which id comes
+first in the list.
+-}
+extractRange : id -> id -> List id -> List id
+extractRange fromId toId items =
+    let
+        fromIndex =
+            findIndex fromId items
+
+        toIndex =
+            findIndex toId items
+    in
+    extractRangeByIndices fromIndex toIndex items
+
+
+extractRangeByIndices : Maybe Int -> Maybe Int -> List id -> List id
+extractRangeByIndices maybeFrom maybeTo items =
+    case maybeFrom of
+        Nothing ->
+            []
+
+        Just fromIdx ->
+            case maybeTo of
+                Nothing ->
+                    []
+
+                Just toIdx ->
+                    let
+                        low =
+                            min fromIdx toIdx
+
+                        high =
+                            max fromIdx toIdx
+                    in
+                    sliceRange low high 0 items
+
+
+{-| Extract elements from index `low` to `high` (inclusive). -}
+sliceRange : Int -> Int -> Int -> List id -> List id
+sliceRange low high current items =
+    case items of
+        [] ->
+            []
+
+        first :: rest ->
+            if current > high then
+                []
+
+            else if current >= low then
+                first :: sliceRange low high (current + 1) rest
+
+            else
+                sliceRange low high (current + 1) rest
+
+
+{-| Remove the first occurrence of an item from a list. -}
+removeItem : id -> List id -> List id
+removeItem target list =
+    removeItemHelp target list []
+
+
+removeItemHelp : id -> List id -> List id -> List id
+removeItemHelp target remaining acc =
+    case remaining of
+        [] ->
+            List.reverse acc
+
+        first :: rest ->
+            if first == target then
+                List.reverse acc ++ rest
+
+            else
+                removeItemHelp target rest (first :: acc)
+
+
+{-| Find the index of the first occurrence of an item in a list. -}
+findIndex : id -> List id -> Maybe Int
+findIndex target list =
+    findIndexHelp target 0 list
+
+
+findIndexHelp : id -> Int -> List id -> Maybe Int
+findIndexHelp target index list =
+    case list of
+        [] ->
+            Nothing
+
+        first :: rest ->
+            if first == target then
+                Just index
+
+            else
+                findIndexHelp target (index + 1) rest
+
+
+{-| Insert a list of items at the given index into another list. -}
+insertAllAt : Int -> List id -> List id -> List id
+insertAllAt index toInsert list =
+    if index <= 0 then
+        toInsert ++ list
+
+    else
+        insertAllAtHelp index toInsert list 0 []
+
+
+insertAllAtHelp : Int -> List id -> List id -> Int -> List id -> List id
+insertAllAtHelp index toInsert remaining current acc =
+    case remaining of
+        [] ->
+            List.reverse acc ++ toInsert
+
+        first :: rest ->
+            if current == index then
+                List.reverse acc ++ toInsert ++ remaining
+
+            else
+                insertAllAtHelp index toInsert rest (current + 1) (first :: acc)

@@ -1,0 +1,127 @@
+module DnD.Droppable exposing
+    ( droppableAttrs
+    , isOver
+    , isAccepted
+    , activeStyles
+    , rejectedStyles
+    )
+
+
+{-| Attributes and styles for defining drop zones.
+
+Apply `droppableAttrs` to an element to make it a valid drop target.
+Use `isOver` and `activeStyles` to provide visual feedback when a
+dragged item is hovering over the target.
+
+@docs droppableAttrs, isOver, isAccepted, activeStyles, rejectedStyles
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import DnD exposing (State, DragOperation(..), DragItem, DropTarget)
+import Html exposing (Attribute)
+import Html.Attributes exposing (attribute)
+
+
+{-| Generate the HTML attributes to make an element a drop target.
+
+Uses `aria-roledescription` instead of the deprecated `aria-dropeffect`.
+
+    div (DnD.Droppable.droppableAttrs ++ [ class "drop-zone" ])
+        [ text "Drop here" ]
+-}
+droppableAttrs : List (Attribute msg)
+droppableAttrs =
+    [ attribute "aria-roledescription" "droppable region"
+    ]
+
+
+{-| Check whether the currently dragged item is over the given drop target.
+
+    if DnD.Droppable.isOver "column-1" state then
+        "Hovering!"
+    else
+        "Idle"
+-}
+isOver : id -> State id -> Bool
+isOver targetId state =
+    case state.operation of
+        NotDragging ->
+            False
+
+        Dragging drag ->
+            Maybe.withDefault False
+                (Maybe.map (\t -> t.id == targetId) drag.over)
+
+
+{-| Check whether the currently dragged item is accepted by a target.
+
+Returns True when a drag is active and the item's type matches the
+target's `accept` list (or the target accepts all types). Returns
+False when no drag is active, the item is not over the target, or
+the type is rejected.
+
+    if DnD.Droppable.isAccepted "column-1" state then
+        "Can drop here"
+    else
+        "Cannot drop here"
+-}
+isAccepted : id -> List String -> State id -> Bool
+isAccepted targetId acceptTypes state =
+    case state.operation of
+        NotDragging ->
+            False
+
+        Dragging drag ->
+            List.member drag.item.itemType acceptTypes
+
+
+{-| Styles to highlight a drop zone when a dragged item is hovering over it.
+
+Returns highlight styles when active, or an empty list when idle.
+
+    div (DnD.Droppable.activeStyles state "zone-1" ++ otherAttrs)
+        [ text "Drop Zone" ]
+-}
+activeStyles : State id -> id -> List (Attribute msg)
+activeStyles state targetId =
+    if isOver targetId state then
+        [ Css.inlineStyle
+            [ Css.outline (Value.px 2) Value.dashed (Value.hex "4a90d9")
+            , Css.property "outline-offset" "2px"
+            , Css.backgroundColor (Value.rgba 74 144 217 0.05)
+            ]
+        ]
+
+    else
+        []
+
+
+{-| Styles to show a rejected state when a dragged item cannot be dropped.
+
+Displayed when an item is being dragged but its type is not accepted
+by this drop target. Shows a subtle red indicator.
+
+    div (DnD.Droppable.rejectedStyles state "zone-1" ["card"] ++ otherAttrs)
+        [ text "Drop Zone" ]
+-}
+rejectedStyles : State id -> id -> List String -> List (Attribute msg)
+rejectedStyles state targetId acceptTypes =
+    case state.operation of
+        NotDragging ->
+            []
+
+        Dragging drag ->
+            if not (List.member drag.item.itemType acceptTypes) then
+                [ Css.inlineStyle
+                    [ Css.outline (Value.px 2) Value.dashed (Value.hex "d94a4a")
+                    , Css.property "outline-offset" "2px"
+                    , Css.backgroundColor (Value.rgba 217 74 74 0.05)
+                    , Css.opacity (Value.num 0.5)
+                    ]
+                ]
+
+            else
+                []

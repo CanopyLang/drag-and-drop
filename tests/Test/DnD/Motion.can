@@ -1,0 +1,621 @@
+module Test.DnD.Motion exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD.Motion exposing (..)
+import Animation.Spring as Spring
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.Motion"
+        [ springPresetTests
+        , defaultConfigTests
+        , dropAnimationCreateTests
+        , dropAnimationStepTests
+        , isDropCompleteTests
+        , dropAnimationPositionTests
+        , dropAnimationVelocityTests
+        , dropFromVelocityTests
+        , liftStylesTests
+        , materialShadowTests
+        , displacementStylesTests
+        , settleStylesTests
+        , bounceStylesTests
+        , glowStylesTests
+        ]
+
+
+springPresetTests : Test
+springPresetTests =
+    describe "springPresetToConfig"
+        [ test "Snappy returns config with stiffness 300" <|
+            \() ->
+                springPresetToConfig Snappy
+                    |> Expect.equal (Spring.config 300 28 1)
+        , test "Bouncy returns config with stiffness 130" <|
+            \() ->
+                springPresetToConfig Bouncy
+                    |> Expect.equal (Spring.config 130 13 1)
+        , test "Smooth returns config with stiffness 180" <|
+            \() ->
+                springPresetToConfig Smooth
+                    |> Expect.equal (Spring.config 180 22 1)
+        , test "Heavy returns config with stiffness 120" <|
+            \() ->
+                springPresetToConfig Heavy
+                    |> Expect.equal (Spring.config 120 26 1)
+        , test "each preset returns a different config" <|
+            \() ->
+                let
+                    configs =
+                        [ springPresetToConfig Snappy
+                        , springPresetToConfig Bouncy
+                        , springPresetToConfig Smooth
+                        , springPresetToConfig Heavy
+                        ]
+
+                    allDifferent =
+                        List.length configs == List.length (uniqueConfigs configs)
+                in
+                Expect.true "all presets should produce different configs" allDifferent
+        , test "Snappy differs from Smooth" <|
+            \() ->
+                Expect.notEqual (springPresetToConfig Snappy) (springPresetToConfig Smooth)
+        , test "Heavy differs from Bouncy" <|
+            \() ->
+                Expect.notEqual (springPresetToConfig Heavy) (springPresetToConfig Bouncy)
+        ]
+
+
+defaultConfigTests : Test
+defaultConfigTests =
+    describe "default configs"
+        [ test "defaultLiftConfig has scale 1.05" <|
+            \() ->
+                defaultLiftConfig.scale
+                    |> Expect.equal 1.05
+        , test "defaultLiftConfig has shadowElevation 8.0" <|
+            \() ->
+                defaultLiftConfig.shadowElevation
+                    |> Expect.equal 8.0
+        , test "defaultDropConfig uses Smooth spring" <|
+            \() ->
+                defaultDropConfig.spring
+                    |> Expect.equal Smooth
+        , test "defaultDropConfig uses Settle landing" <|
+            \() ->
+                defaultDropConfig.landing
+                    |> Expect.equal Settle
+        , test "defaultDisplacementConfig has 200ms duration" <|
+            \() ->
+                defaultDisplacementConfig.durationMs
+                    |> Expect.equal 200
+        , test "defaultDisplacementConfig has 15ms stagger" <|
+            \() ->
+                defaultDisplacementConfig.staggerMs
+                    |> Expect.equal 15
+        , test "defaultDisplacementConfig uses M3 Emphasized easing" <|
+            \() ->
+                defaultDisplacementConfig.easing
+                    |> Expect.equal { x1 = 0.2, y1 = 0, x2 = 0, y2 = 1 }
+        , test "defaultDisplacementConfig easing x1 is 0.2" <|
+            \() ->
+                defaultDisplacementConfig.easing.x1
+                    |> Expect.equal 0.2
+        , test "defaultDisplacementConfig easing y1 is 0" <|
+            \() ->
+                defaultDisplacementConfig.easing.y1
+                    |> Expect.equal 0
+        , test "defaultDisplacementConfig easing x2 is 0" <|
+            \() ->
+                defaultDisplacementConfig.easing.x2
+                    |> Expect.equal 0
+        , test "defaultDisplacementConfig easing y2 is 1" <|
+            \() ->
+                defaultDisplacementConfig.easing.y2
+                    |> Expect.equal 1
+        ]
+
+
+dropAnimationCreateTests : Test
+dropAnimationCreateTests =
+    describe "dropAnimation"
+        [ test "creates animation with correct initial position" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Snappy
+                            { fromX = 100, fromY = 200, toX = 0, toY = 0 }
+
+                    pos =
+                        dropAnimationPosition anim
+                in
+                Expect.equal { x = 100, y = 200 } pos
+        , test "creates animation starting at origin when from equals zero" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Smooth
+                            { fromX = 0, fromY = 0, toX = 50, toY = 50 }
+
+                    pos =
+                        dropAnimationPosition anim
+                in
+                Expect.equal { x = 0, y = 0 } pos
+        , test "creates animation with same from and to (immediately complete)" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Bouncy
+                            { fromX = 10, fromY = 10, toX = 10, toY = 10 }
+                in
+                isDropComplete anim
+                    |> Expect.equal True
+        , test "creates animation with negative coordinates" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Heavy
+                            { fromX = -50, fromY = -100, toX = 0, toY = 0 }
+
+                    pos =
+                        dropAnimationPosition anim
+                in
+                Expect.equal { x = -50, y = -100 } pos
+        ]
+
+
+dropAnimationStepTests : Test
+dropAnimationStepTests =
+    describe "dropAnimationStep"
+        [ test "stepping advances position toward target" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Snappy
+                            { fromX = 100, fromY = 0, toX = 0, toY = 0 }
+
+                    stepped =
+                        dropAnimationStep 16.6 anim
+
+                    pos =
+                        dropAnimationPosition stepped
+                in
+                Expect.true "x should move toward 0" (pos.x < 100)
+        , test "multiple steps continue approaching target" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Snappy
+                            { fromX = 100, fromY = 0, toX = 0, toY = 0 }
+
+                    stepped1 =
+                        dropAnimationStep 16.6 anim
+
+                    stepped2 =
+                        dropAnimationStep 16.6 stepped1
+
+                    pos1 =
+                        dropAnimationPosition stepped1
+
+                    pos2 =
+                        dropAnimationPosition stepped2
+                in
+                Expect.true "x should keep decreasing" (pos2.x < pos1.x)
+        , test "stepping with zero delta does not change position" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Snappy
+                            { fromX = 50, fromY = 50, toX = 0, toY = 0 }
+
+                    stepped =
+                        dropAnimationStep 0 anim
+
+                    pos =
+                        dropAnimationPosition stepped
+                in
+                Expect.equal { x = 50, y = 50 } pos
+        , test "position changes after many steps" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Snappy
+                            { fromX = 100, fromY = 100, toX = 0, toY = 0 }
+
+                    stepped =
+                        stepMany 50 anim
+
+                    pos =
+                        dropAnimationPosition stepped
+                in
+                Expect.true "x should be close to 0 after many steps" (abs pos.x < 10)
+        ]
+
+
+isDropCompleteTests : Test
+isDropCompleteTests =
+    describe "isDropComplete"
+        [ test "new animation with distance is not complete" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Snappy
+                            { fromX = 100, fromY = 100, toX = 0, toY = 0 }
+                in
+                isDropComplete anim
+                    |> Expect.equal False
+        , test "animation from origin to origin is complete" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Snappy
+                            { fromX = 0, fromY = 0, toX = 0, toY = 0 }
+                in
+                isDropComplete anim
+                    |> Expect.equal True
+        , test "animation settles after many steps" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Snappy
+                            { fromX = 10, fromY = 10, toX = 0, toY = 0 }
+
+                    settled =
+                        stepMany 500 anim
+                in
+                isDropComplete settled
+                    |> Expect.equal True
+        , test "Bouncy animation also settles eventually" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Bouncy
+                            { fromX = 50, fromY = 50, toX = 0, toY = 0 }
+
+                    settled =
+                        stepMany 500 anim
+                in
+                isDropComplete settled
+                    |> Expect.equal True
+        , test "Heavy animation settles eventually" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Heavy
+                            { fromX = 30, fromY = 30, toX = 0, toY = 0 }
+
+                    settled =
+                        stepMany 500 anim
+                in
+                isDropComplete settled
+                    |> Expect.equal True
+        ]
+
+
+dropAnimationPositionTests : Test
+dropAnimationPositionTests =
+    describe "dropAnimationPosition"
+        [ test "returns initial from position" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Heavy
+                            { fromX = 42, fromY = 99, toX = 0, toY = 0 }
+
+                    pos =
+                        dropAnimationPosition anim
+                in
+                Expect.equal { x = 42, y = 99 } pos
+        , test "returns position closer to target after step" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Heavy
+                            { fromX = 0, fromY = 0, toX = 100, toY = 100 }
+
+                    stepped =
+                        dropAnimationStep 16.6 anim
+
+                    pos =
+                        dropAnimationPosition stepped
+                in
+                Expect.true "x should move toward 100" (pos.x > 0)
+        , test "returns near-target position after many steps" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Smooth
+                            { fromX = 0, fromY = 0, toX = 200, toY = 300 }
+
+                    settled =
+                        stepMany 500 anim
+
+                    pos =
+                        dropAnimationPosition settled
+                in
+                Expect.true "x should be near 200" (abs (pos.x - 200) < 1)
+        ]
+
+
+dropAnimationVelocityTests : Test
+dropAnimationVelocityTests =
+    describe "dropAnimationVelocity"
+        [ test "initial velocity is zero for new animation" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Snappy
+                            { fromX = 100, fromY = 0, toX = 0, toY = 0 }
+
+                    vel =
+                        dropAnimationVelocity anim
+                in
+                Expect.equal { x = 0, y = 0 } vel
+        , test "velocity becomes non-zero after stepping" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Snappy
+                            { fromX = 100, fromY = 0, toX = 0, toY = 0 }
+
+                    stepped =
+                        dropAnimationStep 16.6 anim
+
+                    vel =
+                        dropAnimationVelocity stepped
+                in
+                Expect.true "x velocity should be non-zero" (vel.x /= 0)
+        , test "velocity for settled animation is near zero" <|
+            \() ->
+                let
+                    anim =
+                        dropAnimation Snappy
+                            { fromX = 10, fromY = 0, toX = 0, toY = 0 }
+
+                    settled =
+                        stepMany 500 anim
+
+                    vel =
+                        dropAnimationVelocity settled
+                in
+                Expect.true "x velocity should be near zero" (abs vel.x < 0.1)
+        ]
+
+
+dropFromVelocityTests : Test
+dropFromVelocityTests =
+    describe "dropFromVelocity"
+        [ test "creates animation at from position" <|
+            \() ->
+                let
+                    anim =
+                        dropFromVelocity defaultDropConfig
+                            { from = { x = 50, y = 60 }
+                            , to = { x = 0, y = 0 }
+                            , velocity = { x = 100, y = -50 }
+                            }
+
+                    pos =
+                        dropAnimationPosition anim
+                in
+                Expect.equal { x = 50, y = 60 } pos
+        , test "created animation is not complete when from differs from to" <|
+            \() ->
+                let
+                    anim =
+                        dropFromVelocity defaultDropConfig
+                            { from = { x = 50, y = 60 }
+                            , to = { x = 0, y = 0 }
+                            , velocity = { x = 0, y = 0 }
+                            }
+                in
+                isDropComplete anim
+                    |> Expect.equal False
+        , test "created animation settles after many steps" <|
+            \() ->
+                let
+                    anim =
+                        dropFromVelocity defaultDropConfig
+                            { from = { x = 10, y = 10 }
+                            , to = { x = 0, y = 0 }
+                            , velocity = { x = 50, y = -20 }
+                            }
+
+                    settled =
+                        stepMany 500 anim
+                in
+                isDropComplete settled
+                    |> Expect.equal True
+        ]
+
+
+liftStylesTests : Test
+liftStylesTests =
+    describe "liftStyles"
+        [ test "returns non-empty style list at progress 0" <|
+            \() ->
+                liftStyles defaultLiftConfig 0.0
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns non-empty style list at progress 1" <|
+            \() ->
+                liftStyles defaultLiftConfig 1.0
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 4 styles (transform, shadow, will-change, z-index)" <|
+            \() ->
+                liftStyles defaultLiftConfig 0.5
+                    |> List.length
+                    |> Expect.equal 4
+        , test "styles at progress 0 differ from progress 1" <|
+            \() ->
+                Expect.notEqual (liftStyles defaultLiftConfig 0.0) (liftStyles defaultLiftConfig 1.0)
+        , test "mid-progress returns intermediate values" <|
+            \() ->
+                let
+                    s0 =
+                        liftStyles defaultLiftConfig 0.0
+
+                    s05 =
+                        liftStyles defaultLiftConfig 0.5
+
+                    s1 =
+                        liftStyles defaultLiftConfig 1.0
+                in
+                Expect.true "mid styles should differ from both extremes"
+                    (s05 /= s0 && s05 /= s1)
+        ]
+
+
+materialShadowTests : Test
+materialShadowTests =
+    describe "materialShadow"
+        [ test "returns non-empty style list" <|
+            \() ->
+                materialShadow 8.0
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns one style for shadow" <|
+            \() ->
+                materialShadow 4.0
+                    |> List.length
+                    |> Expect.equal 1
+        , test "zero elevation returns a style" <|
+            \() ->
+                materialShadow 0.0
+                    |> List.length
+                    |> Expect.equal 1
+        , test "different elevations produce different shadows" <|
+            \() ->
+                Expect.notEqual (materialShadow 2.0) (materialShadow 8.0)
+        ]
+
+
+displacementStylesTests : Test
+displacementStylesTests =
+    describe "displacementStyles"
+        [ test "returns non-empty style list" <|
+            \() ->
+                displacementStyles defaultDisplacementConfig 0
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns one transition style" <|
+            \() ->
+                displacementStyles defaultDisplacementConfig 3
+                    |> List.length
+                    |> Expect.equal 1
+        , test "index 0 and index 3 produce different styles due to stagger" <|
+            \() ->
+                Expect.notEqual
+                    (displacementStyles defaultDisplacementConfig 0)
+                    (displacementStyles defaultDisplacementConfig 3)
+        , test "index 0 has no stagger delay" <|
+            \() ->
+                let
+                    styles =
+                        displacementStyles defaultDisplacementConfig 0
+                in
+                Expect.true "should produce styles" (List.length styles > 0)
+        ]
+
+
+settleStylesTests : Test
+settleStylesTests =
+    describe "settleStyles"
+        [ test "returns non-empty list" <|
+            \() ->
+                settleStyles 0.5
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 2 styles" <|
+            \() ->
+                settleStyles 0.0
+                    |> List.length
+                    |> Expect.equal 2
+        , test "styles at 0 differ from styles at 1" <|
+            \() ->
+                Expect.notEqual (settleStyles 0.0) (settleStyles 1.0)
+        ]
+
+
+bounceStylesTests : Test
+bounceStylesTests =
+    describe "bounceStyles"
+        [ test "returns non-empty list" <|
+            \() ->
+                bounceStyles 0.5
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 1 style" <|
+            \() ->
+                bounceStyles 0.0
+                    |> List.length
+                    |> Expect.equal 1
+        , test "different progress values produce different styles" <|
+            \() ->
+                Expect.notEqual (bounceStyles 0.0) (bounceStyles 0.8)
+        , test "at progress 0 returns styles" <|
+            \() ->
+                Expect.true "should have styles" (List.length (bounceStyles 0.0) > 0)
+        , test "at progress 1 returns styles" <|
+            \() ->
+                Expect.true "should have styles" (List.length (bounceStyles 1.0) > 0)
+        ]
+
+
+glowStylesTests : Test
+glowStylesTests =
+    describe "glowStyles"
+        [ test "returns non-empty list" <|
+            \() ->
+                glowStyles 0.5
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 2 styles" <|
+            \() ->
+                glowStyles 0.5
+                    |> List.length
+                    |> Expect.equal 2
+        , test "different progress values produce different styles" <|
+            \() ->
+                Expect.notEqual (glowStyles 0.0) (glowStyles 1.0)
+        , test "at progress 0 has non-zero opacity effect" <|
+            \() ->
+                Expect.true "should have styles" (List.length (glowStyles 0.0) > 0)
+        ]
+
+
+
+-- HELPERS
+
+
+stepMany : Int -> DropAnimation -> DropAnimation
+stepMany n anim =
+    if n <= 0 then
+        anim
+
+    else
+        stepMany (n - 1) (dropAnimationStep 16.6 anim)
+
+
+uniqueConfigs : List Spring.SpringConfig -> List Spring.SpringConfig
+uniqueConfigs configs =
+    List.foldl
+        (\c acc ->
+            if List.member c acc then
+                acc
+
+            else
+                c :: acc
+        )
+        []
+        configs

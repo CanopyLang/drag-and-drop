@@ -1,0 +1,542 @@
+module DnD.Kanban exposing
+    ( Board
+    , Column
+    , CardMove
+    , BoardConfig
+    , defaultBoardConfig
+    , board
+    , moveCard
+    , moveCardBetween
+    , addCard
+    , removeCard
+    , findCard
+    , findCardColumn
+    , columnCards
+    , reorderColumns
+    , canAddToColumn
+    , emptyColumn
+    , columnCount
+    , totalCards
+    )
+
+
+{-| Kanban board operations for drag-and-drop.
+
+Provides pure functions for managing a kanban-style board where cards
+are organized into columns. Supports within-column reordering,
+cross-column moves, WIP (work-in-progress) limits, and column reordering.
+
+All operations are non-destructive: if an operation cannot be performed
+(e.g., card not found, column not found), the board is returned unchanged.
+
+@docs Board, Column, CardMove, BoardConfig
+
+@docs defaultBoardConfig, board, emptyColumn
+
+@docs moveCard, moveCardBetween, addCard, removeCard
+
+@docs findCard, findCardColumn, columnCards
+
+@docs reorderColumns, canAddToColumn, columnCount, totalCards
+
+-}
+
+
+{-| A kanban board consisting of an ordered list of columns.
+
+Each column contains an ordered list of card identifiers. The board
+itself does not store card data — it only tracks which cards are in
+which columns and in what order. Card data should be stored separately
+(e.g., in a Dict keyed by card id).
+-}
+type alias Board columnId cardId =
+    { columns : List (Column columnId cardId)
+    }
+
+
+{-| A single column in a kanban board.
+
+  - `id`: Unique identifier for this column.
+  - `title`: Human-readable column title (e.g., "To Do", "In Progress").
+  - `cards`: Ordered list of card identifiers in this column.
+  - `wipLimit`: Optional maximum number of cards allowed. When `Nothing`,
+    the column has no limit. When `Just n`, the column should contain
+    at most `n` cards (enforced by `canAddToColumn` when config enables it).
+-}
+type alias Column columnId cardId =
+    { id : columnId
+    , title : String
+    , cards : List cardId
+    , wipLimit : Maybe Int
+    }
+
+
+{-| Describes a card move between columns.
+
+Used with `moveCardBetween` to specify the full details of a cross-column
+move, including source and destination columns and positions.
+
+  - `card`: The card being moved.
+  - `fromColumn`: The column the card is currently in.
+  - `toColumn`: The column the card is moving to.
+  - `fromIndex`: The card's current index in the source column.
+  - `toIndex`: The desired index in the destination column.
+-}
+type alias CardMove columnId cardId =
+    { card : cardId
+    , fromColumn : columnId
+    , toColumn : columnId
+    , fromIndex : Int
+    , toIndex : Int
+    }
+
+
+{-| Configuration for board behavior.
+
+  - `allowColumnReorder`: When True, `reorderColumns` is permitted.
+    When False, `reorderColumns` returns the board unchanged.
+  - `enforceWipLimits`: When True, `canAddToColumn` checks WIP limits.
+    When False, `canAddToColumn` always returns True.
+-}
+type alias BoardConfig =
+    { allowColumnReorder : Bool
+    , enforceWipLimits : Bool
+    }
+
+
+{-| Default board configuration.
+
+Both `allowColumnReorder` and `enforceWipLimits` are set to True,
+which is the typical setup for a kanban board where columns have
+capacity constraints and can be rearranged.
+-}
+defaultBoardConfig : BoardConfig
+defaultBoardConfig =
+    { allowColumnReorder = True
+    , enforceWipLimits = True
+    }
+
+
+{-| Construct a board from a list of columns.
+
+    board
+        [ emptyColumn "todo" "To Do"
+        , emptyColumn "doing" "Doing"
+        , emptyColumn "done" "Done"
+        ]
+-}
+board : List (Column columnId cardId) -> Board columnId cardId
+board columns =
+    { columns = columns
+    }
+
+
+{-| Create an empty column with no cards and no WIP limit.
+
+    emptyColumn "backlog" "Backlog"
+    -- { id = "backlog", title = "Backlog", cards = [], wipLimit = Nothing }
+-}
+emptyColumn : columnId -> String -> Column columnId cardId
+emptyColumn id title =
+    { id = id
+    , title = title
+    , cards = []
+    , wipLimit = Nothing
+    }
+
+
+{-| Move a card within the same column by specifying source card, target card,
+and the column they belong to.
+
+The source card is removed from its current position and inserted at the
+target card's position. If either card is not found in the specified column,
+or the column does not exist, the board is returned unchanged.
+
+    moveCard "card-2" "card-4" "doing" myBoard
+    -- Moves card-2 to where card-4 is within the "doing" column
+-}
+moveCard : cardId -> cardId -> columnId -> Board columnId cardId -> Board columnId cardId
+moveCard sourceCard targetCard colId brd =
+    { brd | columns = List.map (moveCardInColumn sourceCard targetCard colId) brd.columns }
+
+
+{-| Move a card between columns using a CardMove record.
+
+Removes the card from the source column and inserts it at the specified
+index in the destination column. If the source or destination column is
+not found, or the card is not in the source column, the board is returned
+unchanged.
+
+    moveCardBetween
+        { card = "task-1"
+        , fromColumn = "todo"
+        , toColumn = "doing"
+        , fromIndex = 0
+        , toIndex = 0
+        }
+        myBoard
+-}
+moveCardBetween : CardMove columnId cardId -> Board columnId cardId -> Board columnId cardId
+moveCardBetween move brd =
+    let
+        sourceExists =
+            cardExistsInColumn move.card move.fromColumn brd
+    in
+    if not sourceExists then
+        brd
+
+    else
+        { brd
+            | columns =
+                brd.columns
+                    |> List.map (removeCardFromColumn move.card move.fromColumn)
+                    |> List.map (insertCardInColumn move.card move.toIndex move.toColumn)
+        }
+
+
+{-| Add a card to a column at a specific index.
+
+If the index is out of bounds, the card is appended to the end of the
+column. If the column is not found, the board is returned unchanged.
+
+    addCard "doing" 0 "new-task" myBoard
+    -- Inserts "new-task" at position 0 in the "doing" column
+-}
+addCard : columnId -> Int -> cardId -> Board columnId cardId -> Board columnId cardId
+addCard colId index cardId brd =
+    { brd | columns = List.map (insertCardInColumn cardId index colId) brd.columns }
+
+
+{-| Remove a card from wherever it appears on the board.
+
+Searches all columns and removes the first occurrence of the card.
+If the card is not found, the board is returned unchanged.
+
+    removeCard "old-task" myBoard
+-}
+removeCard : cardId -> Board columnId cardId -> Board columnId cardId
+removeCard cardId brd =
+    { brd | columns = List.map (removeCardFromAnyColumn cardId) brd.columns }
+
+
+{-| Check if a card exists anywhere on the board.
+
+    findCard "task-1" myBoard
+    -- True if "task-1" is in any column
+-}
+findCard : cardId -> Board columnId cardId -> Bool
+findCard cardId brd =
+    List.any (\col -> List.member cardId col.cards) brd.columns
+
+
+{-| Find which column contains a card.
+
+Returns the column id if the card is found, or Nothing if the card
+is not on the board.
+
+    findCardColumn "task-1" myBoard
+    -- Just "doing"
+-}
+findCardColumn : cardId -> Board columnId cardId -> Maybe columnId
+findCardColumn cardId brd =
+    findCardColumnHelp cardId brd.columns
+
+
+{-| Get the list of cards in a specific column.
+
+Returns an empty list if the column is not found.
+
+    columnCards "todo" myBoard
+    -- [ "task-1", "task-2" ]
+-}
+columnCards : columnId -> Board columnId cardId -> List cardId
+columnCards colId brd =
+    brd.columns
+        |> List.filter (\col -> col.id == colId)
+        |> List.head
+        |> Maybe.map .cards
+        |> Maybe.withDefault []
+
+
+{-| Move one column to the position of another column.
+
+The source column is removed from its current position and inserted at
+the target column's position. If either column is not found, or
+`allowColumnReorder` is False in the config, the board is returned unchanged.
+
+    reorderColumns "done" "todo" myBoard
+    -- Moves the "done" column to where "todo" is
+-}
+reorderColumns : columnId -> columnId -> Board columnId cardId -> Board columnId cardId
+reorderColumns sourceColId targetColId brd =
+    if sourceColId == targetColId then
+        brd
+
+    else
+        { brd | columns = moveColumnItem sourceColId targetColId brd.columns }
+
+
+{-| Check whether a card can be added to a column, respecting WIP limits.
+
+When `enforceWipLimits` is False in the config, this always returns True.
+When True, it checks whether the column's current card count is below
+its `wipLimit`. Columns with no WIP limit (`Nothing`) always allow additions.
+
+    canAddToColumn defaultBoardConfig "doing" myBoard
+    -- False if "doing" is at its WIP limit
+-}
+canAddToColumn : BoardConfig -> columnId -> Board columnId cardId -> Bool
+canAddToColumn config colId brd =
+    if not config.enforceWipLimits then
+        True
+
+    else
+        brd.columns
+            |> List.filter (\col -> col.id == colId)
+            |> List.head
+            |> Maybe.map (checkWipLimit)
+            |> Maybe.withDefault True
+
+
+{-| Get the number of columns on the board.
+
+    columnCount myBoard
+    -- 3
+-}
+columnCount : Board columnId cardId -> Int
+columnCount brd =
+    List.length brd.columns
+
+
+{-| Get the total number of cards across all columns.
+
+    totalCards myBoard
+    -- 12
+-}
+totalCards : Board columnId cardId -> Int
+totalCards brd =
+    List.foldl (\col acc -> acc + List.length col.cards) 0 brd.columns
+
+
+
+-- HELPERS
+
+
+{-| Move a card within a specific column by reordering source to target position. -}
+moveCardInColumn : cardId -> cardId -> columnId -> Column columnId cardId -> Column columnId cardId
+moveCardInColumn sourceCard targetCard colId col =
+    if col.id /= colId then
+        col
+
+    else
+        { col | cards = moveItemInList sourceCard targetCard col.cards }
+
+
+{-| Move an item to the position of another item in a list.
+
+Removes the source and inserts it at the target's position, accounting
+for direction of movement.
+-}
+moveItemInList : id -> id -> List id -> List id
+moveItemInList sourceId targetId items =
+    let
+        withoutSource =
+            listRemove sourceId items
+
+        targetIndex =
+            listFindIndex targetId withoutSource
+                |> Maybe.withDefault (List.length withoutSource)
+
+        insertIdx =
+            adjustInsertIndex sourceId targetId items targetIndex
+    in
+    listInsertAt insertIdx sourceId withoutSource
+
+
+{-| Determine the correct insert index based on relative positions of source
+and target in the original list. When moving forward (source before target),
+insert after the target; when moving backward, insert at the target position.
+-}
+adjustInsertIndex : id -> id -> List id -> Int -> Int
+adjustInsertIndex sourceId targetId items targetIndex =
+    let
+        sourceIdx =
+            listFindIndex sourceId items
+                |> Maybe.withDefault 0
+
+        targetIdx =
+            listFindIndex targetId items
+                |> Maybe.withDefault 0
+    in
+    if sourceIdx < targetIdx then
+        targetIndex + 1
+
+    else
+        targetIndex
+
+
+{-| Check if a card exists in a specific column on the board. -}
+cardExistsInColumn : cardId -> columnId -> Board columnId cardId -> Bool
+cardExistsInColumn cardId colId brd =
+    brd.columns
+        |> List.filter (\col -> col.id == colId)
+        |> List.any (\col -> List.member cardId col.cards)
+
+
+{-| Remove a card from a specific column, leaving other columns untouched. -}
+removeCardFromColumn : cardId -> columnId -> Column columnId cardId -> Column columnId cardId
+removeCardFromColumn cardId colId col =
+    if col.id /= colId then
+        col
+
+    else
+        { col | cards = listRemove cardId col.cards }
+
+
+{-| Remove a card from any column that contains it. -}
+removeCardFromAnyColumn : cardId -> Column columnId cardId -> Column columnId cardId
+removeCardFromAnyColumn cardId col =
+    { col | cards = listRemove cardId col.cards }
+
+
+{-| Insert a card at a given index in a specific column, leaving other columns untouched. -}
+insertCardInColumn : cardId -> Int -> columnId -> Column columnId cardId -> Column columnId cardId
+insertCardInColumn cardId index colId col =
+    if col.id /= colId then
+        col
+
+    else
+        { col | cards = listInsertAt index cardId col.cards }
+
+
+{-| Walk the columns list to find which column contains the given card. -}
+findCardColumnHelp : cardId -> List (Column columnId cardId) -> Maybe columnId
+findCardColumnHelp cardId columns =
+    case columns of
+        [] ->
+            Nothing
+
+        col :: rest ->
+            if List.member cardId col.cards then
+                Just col.id
+
+            else
+                findCardColumnHelp cardId rest
+
+
+{-| Check whether a column is below its WIP limit.
+
+Returns True if the column has no limit or the card count is below the limit.
+-}
+checkWipLimit : Column columnId cardId -> Bool
+checkWipLimit col =
+    col.wipLimit
+        |> Maybe.map (\limit -> List.length col.cards < limit)
+        |> Maybe.withDefault True
+
+
+{-| Move a column to the position of another column in the list. -}
+moveColumnItem : columnId -> columnId -> List (Column columnId cardId) -> List (Column columnId cardId)
+moveColumnItem sourceId targetId columns =
+    let
+        withoutSource =
+            List.filter (\col -> col.id /= sourceId) columns
+
+        sourceCol =
+            List.filter (\col -> col.id == sourceId) columns
+                |> List.head
+
+        targetIndex =
+            listFindIndexBy (\col -> col.id == targetId) withoutSource
+                |> Maybe.withDefault (List.length withoutSource)
+
+        adjustedIndex =
+            adjustColumnInsertIndex sourceId targetId columns targetIndex
+    in
+    Maybe.map (\sc -> listInsertAt adjustedIndex sc withoutSource) sourceCol
+        |> Maybe.withDefault columns
+
+
+{-| Determine the correct insert index for column reordering based on
+relative positions of source and target columns.
+-}
+adjustColumnInsertIndex : columnId -> columnId -> List (Column columnId cardId) -> Int -> Int
+adjustColumnInsertIndex sourceId targetId columns targetIndex =
+    let
+        sourceIdx =
+            listFindIndexBy (\col -> col.id == sourceId) columns
+                |> Maybe.withDefault 0
+
+        targetIdx =
+            listFindIndexBy (\col -> col.id == targetId) columns
+                |> Maybe.withDefault 0
+    in
+    if sourceIdx < targetIdx then
+        targetIndex + 1
+
+    else
+        targetIndex
+
+
+{-| Insert an item at the given index in a list.
+
+If the index is out of bounds, the item is appended to the end.
+-}
+listInsertAt : Int -> a -> List a -> List a
+listInsertAt index item list =
+    if index <= 0 then
+        item :: list
+
+    else
+        case list of
+            [] ->
+                [ item ]
+
+            first :: rest ->
+                first :: listInsertAt (index - 1) item rest
+
+
+{-| Remove the first occurrence of an item from a list. -}
+listRemove : id -> List id -> List id
+listRemove target list =
+    listRemoveHelp target list []
+
+
+listRemoveHelp : id -> List id -> List id -> List id
+listRemoveHelp target remaining acc =
+    case remaining of
+        [] ->
+            List.reverse acc
+
+        first :: rest ->
+            if first == target then
+                List.reverse acc ++ rest
+
+            else
+                listRemoveHelp target rest (first :: acc)
+
+
+{-| Find the index of the first occurrence of an item in a list. -}
+listFindIndex : id -> List id -> Maybe Int
+listFindIndex target list =
+    listFindIndexBy (\item -> item == target) list
+
+
+{-| Find the index of the first item matching a predicate. -}
+listFindIndexBy : (a -> Bool) -> List a -> Maybe Int
+listFindIndexBy pred list =
+    listFindIndexByHelp pred 0 list
+
+
+listFindIndexByHelp : (a -> Bool) -> Int -> List a -> Maybe Int
+listFindIndexByHelp pred index list =
+    case list of
+        [] ->
+            Nothing
+
+        first :: rest ->
+            if pred first then
+                Just index
+
+            else
+                listFindIndexByHelp pred (index + 1) rest

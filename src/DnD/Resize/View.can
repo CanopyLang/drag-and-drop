@@ -1,0 +1,315 @@
+module DnD.Resize.View exposing
+    ( ResizeViewConfig
+    , HandleStyle(..)
+    , viewResizeHandles
+    , viewHandle
+    , defaultHandleSize
+    , defaultHandleStyle
+    )
+
+
+{-| Resize handle rendering for the drag-and-drop resize system.
+
+Renders eight interactive resize handles around a selection rectangle.
+Each handle is positioned at a corner or edge midpoint and displays an
+appropriate CSS cursor to indicate the resize direction. Handles can
+be styled as dots, squares, or lines.
+
+The handles are rendered inside a position-relative wrapper sized to
+match the target rectangle. Each handle is positioned absolutely at
+the correct edge or corner. When the user presses a handle, the
+`onStart` callback fires with the corresponding `HandlePosition`,
+which should be used to initiate a resize via `DnD.Resize.startResize`.
+
+# Configuration
+@docs ResizeViewConfig, HandleStyle, defaultHandleSize, defaultHandleStyle
+
+# View
+@docs viewResizeHandles, viewHandle
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import DnD exposing (Rect)
+import DnD.Resize exposing (HandlePosition(..), handlePositions, handleCursor)
+import Html exposing (Html, Attribute, div, text)
+import Html.Attributes exposing (style, attribute)
+import Html.Events exposing (onMouseDown)
+
+
+{-| Configuration for rendering resize handles.
+
+  - `onStart`: Message constructor called when a handle is pressed.
+      Receives the `HandlePosition` identifying which handle was grabbed.
+      Wire this to `DnD.Resize.startResize` in your update function.
+  - `handleSize`: The width and height of each handle in pixels.
+      Larger handles are easier to grab but more visually prominent.
+  - `handleStyle`: The visual appearance of the handles.
+-}
+type alias ResizeViewConfig msg =
+    { onStart : HandlePosition -> msg
+    , handleSize : Float
+    , handleStyle : HandleStyle
+    }
+
+
+{-| Visual style for resize handles.
+
+  - `Dots`: Circular handles rendered with full border-radius.
+  - `Squares`: Rectangular handles with sharp corners.
+  - `Lines`: Short line segments along edges, thicker bars at corners.
+      Edge handles render as thin rectangles aligned with their edge;
+      corner handles render as small squares.
+-}
+type HandleStyle
+    = Dots
+    | Squares
+    | Lines
+
+
+{-| The default handle size in pixels.
+
+A value of 8.0 provides a reasonable grab target without being too
+visually intrusive. Increase for touch-friendly interfaces.
+-}
+defaultHandleSize : Float
+defaultHandleSize =
+    8.0
+
+
+{-| The default handle style.
+
+`Squares` is the default because it provides clear visual affordance
+and works well at small sizes without anti-aliasing artifacts.
+-}
+defaultHandleStyle : HandleStyle
+defaultHandleStyle =
+    Squares
+
+
+{-| Render all eight resize handles around a rectangle.
+
+Creates a position-relative wrapper div sized to the given rectangle,
+then positions eight handles at the cardinal and corner positions.
+Each handle fires the `onStart` callback on mouse-down.
+
+The wrapper div is positioned absolutely at the rectangle's coordinates,
+so the caller should place it inside a position-relative container that
+represents the coordinate space of the rectangle.
+
+    viewResizeHandles
+        { onStart = StartResize
+        , handleSize = 8.0
+        , handleStyle = Squares
+        }
+        selectedRect
+
+-}
+viewResizeHandles : ResizeViewConfig msg -> Rect -> Html msg
+viewResizeHandles config rect =
+    div
+        [ Css.inlineStyle
+            [ Css.position Value.absolute
+            , Css.left (Value.px rect.x)
+            , Css.top (Value.px rect.y)
+            , Css.width (Value.px rect.width)
+            , Css.height (Value.px rect.height)
+            , Css.pointerEvents Value.none
+            ]
+        ]
+        (List.map (\pos -> viewHandle config pos rect) handlePositions)
+
+
+{-| Render a single resize handle at the specified position on the
+rectangle's edge or corner.
+
+The handle is positioned absolutely relative to its parent wrapper.
+Cardinal handles (North, South, East, West) are centered along their
+edge. Corner handles are placed at the intersection of two edges.
+
+Each handle has `pointer-events: auto` so it can receive mouse events
+even though its parent wrapper has pointer-events disabled. The CSS
+cursor is set based on the handle position (e.g., `n-resize` for North).
+
+    viewHandle config North selectedRect
+
+-}
+viewHandle : ResizeViewConfig msg -> HandlePosition -> Rect -> Html msg
+viewHandle config position rect =
+    let
+        halfSize =
+            config.handleSize / 2.0
+
+        posStyles =
+            handlePositionStyles position rect.width rect.height halfSize config.handleSize
+
+        shapeStyles =
+            handleShapeStyles config.handleStyle config.handleSize position
+    in
+    div
+        [ Css.inlineStyle
+            (posStyles
+                ++ shapeStyles
+                ++ commonHandleStyles config.handleSize (handleCursor position)
+            )
+        , onMouseDown (config.onStart position)
+        ]
+        []
+
+
+{-| Styles common to all handle shapes: size, position mode, pointer
+events, and cursor.
+-}
+commonHandleStyles : Float -> String -> List Style
+commonHandleStyles size cursorValue =
+    [ Css.position Value.absolute
+    , Css.pointerEvents Value.auto
+    , Css.cursor (Value.unsafeValue cursorValue)
+    , Css.boxSizing Value.borderBox
+    ]
+
+
+{-| Compute the positioning styles for a handle based on its position.
+
+Places the handle at the correct edge or corner of the parent rectangle.
+Cardinal handles are centered along their edge; corner handles are placed
+at the exact corner. All positions are offset by half the handle size so
+the handle straddles the edge.
+-}
+handlePositionStyles : HandlePosition -> Float -> Float -> Float -> Float -> List Style
+handlePositionStyles position rectWidth rectHeight halfSize handleSize =
+    case position of
+        North ->
+            [ Css.left (Value.px (rectWidth / 2.0 - halfSize))
+            , Css.top (Value.px -halfSize)
+            , Css.width (Value.px handleSize)
+            , Css.height (Value.px handleSize)
+            ]
+
+        South ->
+            [ Css.left (Value.px (rectWidth / 2.0 - halfSize))
+            , Css.top (Value.px (rectHeight - halfSize))
+            , Css.width (Value.px handleSize)
+            , Css.height (Value.px handleSize)
+            ]
+
+        East ->
+            [ Css.left (Value.px (rectWidth - halfSize))
+            , Css.top (Value.px (rectHeight / 2.0 - halfSize))
+            , Css.width (Value.px handleSize)
+            , Css.height (Value.px handleSize)
+            ]
+
+        West ->
+            [ Css.left (Value.px -halfSize)
+            , Css.top (Value.px (rectHeight / 2.0 - halfSize))
+            , Css.width (Value.px handleSize)
+            , Css.height (Value.px handleSize)
+            ]
+
+        NorthEast ->
+            [ Css.left (Value.px (rectWidth - halfSize))
+            , Css.top (Value.px -halfSize)
+            , Css.width (Value.px handleSize)
+            , Css.height (Value.px handleSize)
+            ]
+
+        NorthWest ->
+            [ Css.left (Value.px -halfSize)
+            , Css.top (Value.px -halfSize)
+            , Css.width (Value.px handleSize)
+            , Css.height (Value.px handleSize)
+            ]
+
+        SouthEast ->
+            [ Css.left (Value.px (rectWidth - halfSize))
+            , Css.top (Value.px (rectHeight - halfSize))
+            , Css.width (Value.px handleSize)
+            , Css.height (Value.px handleSize)
+            ]
+
+        SouthWest ->
+            [ Css.left (Value.px -halfSize)
+            , Css.top (Value.px (rectHeight - halfSize))
+            , Css.width (Value.px handleSize)
+            , Css.height (Value.px handleSize)
+            ]
+
+
+{-| Compute the shape-specific visual styles for a handle.
+
+  - `Dots`: Full border-radius for a circular appearance, solid blue
+    background with white border.
+  - `Squares`: No border-radius, solid blue background with white border.
+  - `Lines`: Edge handles are rendered as thin rectangles (2px on the
+    narrow axis) spanning part of the edge. Corner handles render as
+    small squares. All use a solid blue fill.
+-}
+handleShapeStyles : HandleStyle -> Float -> HandlePosition -> List Style
+handleShapeStyles handleStyle handleSize position =
+    case handleStyle of
+        Dots ->
+            [ Css.borderRadius (Value.pct 50)
+            , Css.backgroundColor (Value.rgb 59 130 246)
+            , Css.border (Value.px 1.5) Value.solid (Value.rgb 255 255 255)
+            ]
+
+        Squares ->
+            [ Css.backgroundColor (Value.rgb 59 130 246)
+            , Css.border (Value.px 1.5) Value.solid (Value.rgb 255 255 255)
+            ]
+
+        Lines ->
+            lineHandleStyles handleSize position
+
+
+{-| Styles for a Lines-style handle.
+
+Edge handles are thin bars aligned with their edge. Corner handles
+are small filled squares. This style is more subtle than Dots or
+Squares and works well for design-tool interfaces.
+-}
+lineHandleStyles : Float -> HandlePosition -> List Style
+lineHandleStyles handleSize position =
+    case position of
+        North ->
+            [ Css.backgroundColor (Value.rgb 59 130 246)
+            , Css.borderRadius (Value.px 1)
+            ]
+
+        South ->
+            [ Css.backgroundColor (Value.rgb 59 130 246)
+            , Css.borderRadius (Value.px 1)
+            ]
+
+        East ->
+            [ Css.backgroundColor (Value.rgb 59 130 246)
+            , Css.borderRadius (Value.px 1)
+            ]
+
+        West ->
+            [ Css.backgroundColor (Value.rgb 59 130 246)
+            , Css.borderRadius (Value.px 1)
+            ]
+
+        NorthEast ->
+            [ Css.backgroundColor (Value.rgb 59 130 246)
+            , Css.border (Value.px 1) Value.solid (Value.rgb 255 255 255)
+            ]
+
+        NorthWest ->
+            [ Css.backgroundColor (Value.rgb 59 130 246)
+            , Css.border (Value.px 1) Value.solid (Value.rgb 255 255 255)
+            ]
+
+        SouthEast ->
+            [ Css.backgroundColor (Value.rgb 59 130 246)
+            , Css.border (Value.px 1) Value.solid (Value.rgb 255 255 255)
+            ]
+
+        SouthWest ->
+            [ Css.backgroundColor (Value.rgb 59 130 246)
+            , Css.border (Value.px 1) Value.solid (Value.rgb 255 255 255)
+            ]

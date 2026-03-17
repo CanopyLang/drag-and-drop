@@ -1,0 +1,182 @@
+module Test.DnD.Operation exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD.Operation exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+noModifiers : { ctrlKey : Bool, altKey : Bool, metaKey : Bool }
+noModifiers =
+    { ctrlKey = False, altKey = False, metaKey = False }
+
+
+ctrlOnly : { ctrlKey : Bool, altKey : Bool, metaKey : Bool }
+ctrlOnly =
+    { ctrlKey = True, altKey = False, metaKey = False }
+
+
+altOnly : { ctrlKey : Bool, altKey : Bool, metaKey : Bool }
+altOnly =
+    { ctrlKey = False, altKey = True, metaKey = False }
+
+
+metaOnly : { ctrlKey : Bool, altKey : Bool, metaKey : Bool }
+metaOnly =
+    { ctrlKey = False, altKey = False, metaKey = True }
+
+
+ctrlAndAlt : { ctrlKey : Bool, altKey : Bool, metaKey : Bool }
+ctrlAndAlt =
+    { ctrlKey = True, altKey = True, metaKey = False }
+
+
+tests : Test
+tests =
+    describe "DnD.Operation"
+        [ defaultConfigTests
+        , fromModifierKeysTests
+        , cursorTests
+        , labelTests
+        , predicateTests
+        ]
+
+
+defaultConfigTests : Test
+defaultConfigTests =
+    describe "defaultConfig"
+        [ test "default operation is Move" <|
+            \() ->
+                isMove defaultConfig.defaultOperation
+                    |> Expect.equal True
+        , test "allowCopy is True" <|
+            \() ->
+                Expect.equal True defaultConfig.allowCopy
+        , test "allowLink is True" <|
+            \() ->
+                Expect.equal True defaultConfig.allowLink
+        ]
+
+
+fromModifierKeysTests : Test
+fromModifierKeysTests =
+    describe "fromModifierKeys"
+        [ test "no modifiers returns default Move" <|
+            \() ->
+                fromModifierKeys defaultConfig noModifiers
+                    |> isMove
+                    |> Expect.equal True
+        , test "ctrl key returns Copy" <|
+            \() ->
+                fromModifierKeys defaultConfig ctrlOnly
+                    |> isCopy
+                    |> Expect.equal True
+        , test "meta key returns Copy" <|
+            \() ->
+                fromModifierKeys defaultConfig metaOnly
+                    |> isCopy
+                    |> Expect.equal True
+        , test "alt key returns Link" <|
+            \() ->
+                fromModifierKeys defaultConfig altOnly
+                    |> isLink
+                    |> Expect.equal True
+        , test "alt takes priority over ctrl" <|
+            \() ->
+                fromModifierKeys defaultConfig ctrlAndAlt
+                    |> isLink
+                    |> Expect.equal True
+        , test "ctrl with allowCopy False returns default" <|
+            \() ->
+                let
+                    config =
+                        { defaultConfig | allowCopy = False }
+                in
+                fromModifierKeys config ctrlOnly
+                    |> isMove
+                    |> Expect.equal True
+        , test "alt with allowLink False returns default" <|
+            \() ->
+                let
+                    config =
+                        { defaultConfig | allowLink = False }
+                in
+                fromModifierKeys config altOnly
+                    |> isMove
+                    |> Expect.equal True
+        , test "custom default operation Copy with no modifiers" <|
+            \() ->
+                let
+                    config =
+                        { defaultConfig | defaultOperation = Copy }
+                in
+                fromModifierKeys config noModifiers
+                    |> isCopy
+                    |> Expect.equal True
+        ]
+
+
+cursorTests : Test
+cursorTests =
+    describe "operationCursor"
+        [ test "Move cursor is move" <|
+            \() ->
+                operationCursor Move
+                    |> Expect.equal "move"
+        , test "Copy cursor is copy" <|
+            \() ->
+                operationCursor Copy
+                    |> Expect.equal "copy"
+        , test "Link cursor is alias" <|
+            \() ->
+                operationCursor Link
+                    |> Expect.equal "alias"
+        ]
+
+
+labelTests : Test
+labelTests =
+    describe "operationLabel"
+        [ test "Move label" <|
+            \() ->
+                operationLabel Move
+                    |> Expect.equal "Move"
+        , test "Copy label" <|
+            \() ->
+                operationLabel Copy
+                    |> Expect.equal "Copy"
+        , test "Link label" <|
+            \() ->
+                operationLabel Link
+                    |> Expect.equal "Link"
+        ]
+
+
+predicateTests : Test
+predicateTests =
+    describe "isMove/isCopy/isLink"
+        [ test "isMove on Move" <|
+            \() ->
+                isMove Move |> Expect.equal True
+        , test "isMove on Copy" <|
+            \() ->
+                isMove Copy |> Expect.equal False
+        , test "isCopy on Copy" <|
+            \() ->
+                isCopy Copy |> Expect.equal True
+        , test "isCopy on Link" <|
+            \() ->
+                isCopy Link |> Expect.equal False
+        , test "isLink on Link" <|
+            \() ->
+                isLink Link |> Expect.equal True
+        , test "isLink on Move" <|
+            \() ->
+                isLink Move |> Expect.equal False
+        ]

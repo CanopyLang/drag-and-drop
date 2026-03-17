@@ -1,0 +1,123 @@
+module Test.DnD.Sensor exposing (main, tests)
+
+import Basics exposing (..)
+import DnD.Sensor exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.Sensor"
+        [ defaultPointerConfigTests
+        , defaultTouchConfigTests
+        , defaultKeyboardConfigTests
+        , defaultsListTests
+        , pointerConstructorTests
+        , keyboardConstructorTests
+        ]
+
+
+defaultPointerConfigTests : Test
+defaultPointerConfigTests =
+    describe "defaultPointerConfig"
+        [ test "activation distance is 5" <|
+            \() ->
+                defaultPointerConfig.activationDistance
+                    |> Expect.within (Expect.Absolute 0.001) 5.0
+        , test "activation delay is 0" <|
+            \() ->
+                defaultPointerConfig.activationDelay
+                    |> Expect.equal 0
+        ]
+
+
+defaultKeyboardConfigTests : Test
+defaultKeyboardConfigTests =
+    describe "defaultKeyboardConfig"
+        [ test "scroll speed is 10" <|
+            \() ->
+                defaultKeyboardConfig.scrollSpeed
+                    |> Expect.within (Expect.Absolute 0.001) 10.0
+        , test "move step is 10" <|
+            \() ->
+                defaultKeyboardConfig.moveStep
+                    |> Expect.within (Expect.Absolute 0.001) 10.0
+        ]
+
+
+defaultTouchConfigTests : Test
+defaultTouchConfigTests =
+    describe "defaultTouchConfig"
+        [ test "activation distance is 10" <|
+            \() ->
+                defaultTouchConfig.activationDistance
+                    |> Expect.within (Expect.Absolute 0.001) 10.0
+        , test "activation delay is 250" <|
+            \() ->
+                defaultTouchConfig.activationDelay
+                    |> Expect.equal 250
+        , test "cancel on scroll is True" <|
+            \() ->
+                defaultTouchConfig.cancelOnScroll
+                    |> Expect.equal True
+        ]
+
+
+defaultsListTests : Test
+defaultsListTests =
+    describe "defaults"
+        [ test "contains three sensors" <|
+            \() ->
+                List.length defaults
+                    |> Expect.equal 3
+        , test "first is Pointer" <|
+            \() ->
+                case defaults of
+                    (Pointer _) :: _ ->
+                        Expect.pass
+
+                    _ ->
+                        Expect.fail "Expected first sensor to be Pointer"
+        ]
+
+
+pointerConstructorTests : Test
+pointerConstructorTests =
+    describe "pointer"
+        [ test "creates Pointer sensor" <|
+            \() ->
+                let
+                    config =
+                        { activationDistance = 10.0, activationDelay = 200 }
+                in
+                case pointer config of
+                    Pointer c ->
+                        Expect.within (Expect.Absolute 0.001) 10.0 c.activationDistance
+
+                    _ ->
+                        Expect.fail "Expected Pointer"
+        ]
+
+
+keyboardConstructorTests : Test
+keyboardConstructorTests =
+    describe "keyboard"
+        [ test "creates Keyboard sensor" <|
+            \() ->
+                let
+                    config =
+                        { scrollSpeed = 20.0, moveStep = 15.0 }
+                in
+                case keyboard config of
+                    Keyboard c ->
+                        Expect.within (Expect.Absolute 0.001) 20.0 c.scrollSpeed
+
+                    _ ->
+                        Expect.fail "Expected Keyboard"
+        ]

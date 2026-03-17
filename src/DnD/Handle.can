@@ -1,0 +1,109 @@
+module DnD.Handle exposing
+    ( handle
+    , container
+    , handleAttrs
+    )
+
+
+{-| Drag handle support for drag-and-drop operations.
+
+A drag handle is a sub-element within a draggable container that serves
+as the actual grab point. This is useful when only a portion of an item
+(such as a grip icon) should initiate dragging, rather than the entire
+element.
+
+The typical pattern is to use `container` on the outer movable element
+and `handle` (or `handleAttrs`) on the inner grip element:
+
+    div (DnD.Handle.container dndState itemId ++ [ class "card" ])
+        [ DnD.Handle.handle [ class "grip-icon" ] [ text ":::" ]
+        , div [] [ text "Card content (not draggable)" ]
+        ]
+
+@docs handle, container, handleAttrs
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import DnD exposing (State, DragOperation(..))
+import Html exposing (Html, Attribute, div)
+import Html.Attributes exposing (attribute)
+
+
+{-| Unique ID for the drag instructions element, used by aria-describedby. -}
+dragInstructionsId : String
+dragInstructionsId =
+    "dnd-instructions"
+
+
+{-| Attributes for the grip sub-element within a draggable container.
+
+These attributes make the handle accessible and interactive:
+
+  - `role="button"` so assistive technology announces it as actionable
+  - `aria-roledescription="drag handle"` to clarify the element's purpose
+  - `aria-describedby="dnd-instructions"` to link to usage instructions
+  - `tabindex="0"` to make the handle keyboard-focusable
+  - `cursor: grab` to indicate the element is grabbable
+  - `touch-action: none` to prevent browser scroll on touch drag
+  - `user-select: none` to prevent text selection during drag
+
+    div (DnD.Handle.handleAttrs ++ [ class "my-grip" ])
+        [ text ":::" ]
+-}
+handleAttrs : List (Attribute msg)
+handleAttrs =
+    [ attribute "role" "button"
+    , attribute "aria-roledescription" "drag handle"
+    , attribute "aria-describedby" dragInstructionsId
+    , attribute "tabindex" "0"
+    , Css.inlineStyle
+        [ Css.cursor Value.grab
+        , Css.touchAction Value.none
+        , Css.userSelect Value.none
+        ]
+    ]
+
+
+{-| Render a drag handle element wrapping the given content.
+
+Produces a `div` with all handle accessibility and style attributes
+applied, plus any additional user-supplied attributes. Use this when
+you want a ready-made handle element rather than applying `handleAttrs`
+to your own element.
+
+    DnD.Handle.handle [ class "grip-icon" ] [ text ":::" ]
+-}
+handle : List (Attribute msg) -> List (Html msg) -> Html msg
+handle extraAttrs children =
+    div (handleAttrs ++ extraAttrs) children
+
+
+{-| Attributes for the movable parent container of a drag handle.
+
+When the item identified by the given id is actively being dragged,
+the container receives a `cursor: grabbing` style to provide visual
+feedback. When no drag is active, no additional styles are applied.
+
+    div (DnD.Handle.container dndState itemId ++ [ class "card" ])
+        [ DnD.Handle.handle [] [ text ":::" ]
+        , div [] [ text "Content" ]
+        ]
+-}
+container : State id -> id -> List (Attribute msg)
+container state itemId =
+    case state.operation of
+        NotDragging ->
+            []
+
+        Dragging drag ->
+            if drag.item.id == itemId then
+                [ Css.inlineStyle
+                    [ Css.cursor Value.grabbing
+                    ]
+                ]
+
+            else
+                []

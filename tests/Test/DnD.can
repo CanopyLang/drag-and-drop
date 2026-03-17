@@ -1,0 +1,389 @@
+module Test.DnD exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD exposing (..)
+import DnD.Modifier as Modifier
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+dummyRect : Rect
+dummyRect =
+    { x = 100, y = 200, width = 50, height = 50 }
+
+
+dummyItem : DragItem String
+dummyItem =
+    { id = "item1", rect = dummyRect, itemType = "" }
+
+
+dummyPoint : Point
+dummyPoint =
+    { x = 125, y = 225 }
+
+
+tests : Test
+tests =
+    describe "DnD"
+        [ initTests
+        , startDragTests
+        , moveDragTests
+        , dragOverTests
+        , dragLeaveTests
+        , endDragTests
+        , cancelDragTests
+        , activeDragTests
+        , isDraggingTests
+        , dragDeltaTests
+        , translateRectTests
+        , announcementTests
+        ]
+
+
+initTests : Test
+initTests =
+    describe "init"
+        [ test "starts with NotDragging" <|
+            \() ->
+                case init.operation of
+                    NotDragging ->
+                        Expect.pass
+
+                    Dragging _ ->
+                        Expect.fail "Expected NotDragging"
+        , test "empty announcement" <|
+            \() ->
+                currentAnnouncement init
+                    |> Expect.equal ""
+        ]
+
+
+startDragTests : Test
+startDragTests =
+    describe "StartDrag"
+        [ test "transitions to Dragging" <|
+            \() ->
+                let
+                    state =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+                in
+                case state.operation of
+                    Dragging _ ->
+                        Expect.pass
+
+                    NotDragging ->
+                        Expect.fail "Expected Dragging"
+        , test "sets item id" <|
+            \() ->
+                let
+                    state =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+                in
+                case state.operation of
+                    Dragging drag ->
+                        Expect.equal "item1" drag.item.id
+
+                    NotDragging ->
+                        Expect.fail "Expected Dragging"
+        , test "sets initial delta to zero" <|
+            \() ->
+                let
+                    state =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+                in
+                case state.operation of
+                    Dragging drag ->
+                        Expect.equal { x = 0, y = 0 } drag.delta
+
+                    NotDragging ->
+                        Expect.fail "Expected Dragging"
+        , test "sets current point" <|
+            \() ->
+                let
+                    state =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+                in
+                case state.operation of
+                    Dragging drag ->
+                        Expect.equal dummyPoint drag.current
+
+                    NotDragging ->
+                        Expect.fail "Expected Dragging"
+        , test "over is Nothing initially" <|
+            \() ->
+                let
+                    state =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+                in
+                case state.operation of
+                    Dragging drag ->
+                        Expect.equal Nothing drag.over
+
+                    NotDragging ->
+                        Expect.fail "Expected Dragging"
+        ]
+
+
+moveDragTests : Test
+moveDragTests =
+    describe "MoveDrag"
+        [ test "updates current point" <|
+            \() ->
+                let
+                    state0 =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+
+                    newPoint =
+                        { x = 200, y = 300 }
+
+                    state1 =
+                        update [] dummyRect (MoveDrag newPoint) state0
+                in
+                case state1.operation of
+                    Dragging drag ->
+                        Expect.equal newPoint drag.current
+
+                    NotDragging ->
+                        Expect.fail "Expected Dragging"
+        , test "move when not dragging is no-op" <|
+            \() ->
+                let
+                    state =
+                        update [] dummyRect (MoveDrag { x = 200, y = 300 }) init
+                in
+                case state.operation of
+                    NotDragging ->
+                        Expect.pass
+
+                    Dragging _ ->
+                        Expect.fail "Expected NotDragging"
+        ]
+
+
+dragOverTests : Test
+dragOverTests =
+    describe "DragOverTarget"
+        [ test "sets over target" <|
+            \() ->
+                let
+                    target =
+                        { id = "target1", rect = { x = 50, y = 50, width = 80, height = 80 }, accept = Nothing }
+
+                    state0 =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+
+                    state1 =
+                        update [] dummyRect (DragOverTarget target) state0
+                in
+                case state1.operation of
+                    Dragging drag ->
+                        case drag.over of
+                            Just t ->
+                                Expect.equal "target1" t.id
+
+                            Nothing ->
+                                Expect.fail "Expected over target"
+
+                    NotDragging ->
+                        Expect.fail "Expected Dragging"
+        , test "drag over when not dragging is no-op" <|
+            \() ->
+                let
+                    target =
+                        { id = "t", rect = dummyRect, accept = Nothing }
+
+                    state =
+                        update [] dummyRect (DragOverTarget target) init
+                in
+                case state.operation of
+                    NotDragging ->
+                        Expect.pass
+
+                    Dragging _ ->
+                        Expect.fail "Expected NotDragging"
+        ]
+
+
+dragLeaveTests : Test
+dragLeaveTests =
+    describe "DragLeaveTarget"
+        [ test "clears over target" <|
+            \() ->
+                let
+                    target =
+                        { id = "target1", rect = dummyRect, accept = Nothing }
+
+                    state0 =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+
+                    state1 =
+                        update [] dummyRect (DragOverTarget target) state0
+
+                    state2 =
+                        update [] dummyRect DragLeaveTarget state1
+                in
+                case state2.operation of
+                    Dragging drag ->
+                        Expect.equal Nothing drag.over
+
+                    NotDragging ->
+                        Expect.fail "Expected Dragging"
+        ]
+
+
+endDragTests : Test
+endDragTests =
+    describe "EndDrag"
+        [ test "transitions to NotDragging" <|
+            \() ->
+                let
+                    state0 =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+
+                    state1 =
+                        update [] dummyRect EndDrag state0
+                in
+                case state1.operation of
+                    NotDragging ->
+                        Expect.pass
+
+                    Dragging _ ->
+                        Expect.fail "Expected NotDragging"
+        ]
+
+
+cancelDragTests : Test
+cancelDragTests =
+    describe "CancelDrag"
+        [ test "transitions to NotDragging" <|
+            \() ->
+                let
+                    state0 =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+
+                    state1 =
+                        update [] dummyRect CancelDrag state0
+                in
+                case state1.operation of
+                    NotDragging ->
+                        Expect.pass
+
+                    Dragging _ ->
+                        Expect.fail "Expected NotDragging"
+        ]
+
+
+activeDragTests : Test
+activeDragTests =
+    describe "activeDrag"
+        [ test "returns Nothing when not dragging" <|
+            \() ->
+                activeDrag init
+                    |> Expect.equal Nothing
+        , test "returns Just when dragging" <|
+            \() ->
+                let
+                    state =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+                in
+                case activeDrag state of
+                    Just _ ->
+                        Expect.pass
+
+                    Nothing ->
+                        Expect.fail "Expected Just"
+        , test "returned drag has correct item id" <|
+            \() ->
+                let
+                    state =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+                in
+                case activeDrag state of
+                    Just drag ->
+                        Expect.equal "item1" drag.item.id
+
+                    Nothing ->
+                        Expect.fail "Expected Just"
+        ]
+
+
+isDraggingTests : Test
+isDraggingTests =
+    describe "isDragging"
+        [ test "returns False when not dragging" <|
+            \() ->
+                isDragging "item1" init
+                    |> Expect.equal False
+        , test "returns True for dragged item" <|
+            \() ->
+                let
+                    state =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+                in
+                isDragging "item1" state
+                    |> Expect.equal True
+        , test "returns False for other items" <|
+            \() ->
+                let
+                    state =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+                in
+                isDragging "item2" state
+                    |> Expect.equal False
+        ]
+
+
+dragDeltaTests : Test
+dragDeltaTests =
+    describe "dragDelta"
+        [ test "returns Nothing when not dragging" <|
+            \() ->
+                dragDelta init
+                    |> Expect.equal Nothing
+        , test "returns Just delta when dragging" <|
+            \() ->
+                let
+                    state =
+                        update [] dummyRect (StartDrag dummyItem dummyPoint) init
+                in
+                case dragDelta state of
+                    Just d ->
+                        Expect.equal { x = 0, y = 0 } d
+
+                    Nothing ->
+                        Expect.fail "Expected Just"
+        ]
+
+
+translateRectTests : Test
+translateRectTests =
+    describe "translateRect"
+        [ test "translates by delta" <|
+            \() ->
+                translateRect { x = 10, y = -5 } { x = 100, y = 200, width = 50, height = 50 }
+                    |> Expect.equal { x = 110, y = 195, width = 50, height = 50 }
+        , test "zero delta is identity" <|
+            \() ->
+                translateRect { x = 0, y = 0 } dummyRect
+                    |> Expect.equal dummyRect
+        , test "negative translation" <|
+            \() ->
+                translateRect { x = -50, y = -100 } { x = 100, y = 200, width = 30, height = 30 }
+                    |> Expect.equal { x = 50, y = 100, width = 30, height = 30 }
+        ]
+
+
+announcementTests : Test
+announcementTests =
+    describe "currentAnnouncement"
+        [ test "init has empty announcement" <|
+            \() ->
+                currentAnnouncement init
+                    |> Expect.equal ""
+        ]

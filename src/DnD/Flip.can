@@ -1,0 +1,290 @@
+module DnD.Flip exposing
+    ( Rect
+    , FlipState
+    , FlipDelta
+    , captureFirst
+    , computeFlip
+    , flipStyles
+    , emptyState
+    , lookupDelta
+    , applyFlipTransform
+    )
+
+
+{-| FLIP (First-Last-Invert-Play) animation for smooth reorder transitions.
+
+The FLIP technique, coined by Paul Lewis, enables performant layout animations
+by measuring element positions before and after a DOM change, computing the
+inverse transform, and animating from the inverted position to the final
+position. This avoids layout-triggering CSS animations and runs entirely on
+the compositor thread via `transform`.
+
+The workflow is:
+
+  1. **First** -- capture current element positions with `captureFirst`.
+  2. **Reorder** -- update your model so elements move to new positions.
+  3. **Last** -- capture new positions and compute deltas with `computeFlip`.
+  4. **Invert + Play** -- apply `flipStyles` at progress 0.0 (inverted position)
+     and animate progress to 1.0 (final position) over your chosen duration.
+
+# Types
+@docs Rect, FlipState, FlipDelta
+
+# Capture
+@docs captureFirst, emptyState
+
+# Compute
+@docs computeFlip
+
+# Animate
+@docs flipStyles, applyFlipTransform
+
+# Query
+@docs lookupDelta
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import Css.Transition as Transition
+
+
+{-| A bounding rectangle with position and dimensions.
+
+Matches the shape returned by `Element.getBoundingClientRect` in JavaScript.
+Callers obtain these rects from DOM measurement commands or ports and pass
+them into `captureFirst` and `computeFlip`.
+-}
+type alias Rect =
+    { x : Float
+    , y : Float
+    , width : Float
+    , height : Float
+    }
+
+
+{-| An element's identity paired with its measured bounding rectangle.
+
+Used as input to both `captureFirst` (capturing the "first" positions)
+and `computeFlip` (capturing the "last" positions).
+-}
+type alias ElementRect =
+    { id : String
+    , rect : Rect
+    }
+
+
+{-| The captured "first" positions in a FLIP animation.
+
+This is an opaque snapshot of element positions taken before a reorder.
+Create one with `captureFirst` and pass it to `computeFlip` after the
+reorder to compute inverse transforms.
+-}
+type alias FlipState =
+    List ElementRect
+
+
+{-| The computed inverse transform for a single element.
+
+  - `id` -- the element identifier.
+  - `dx` -- horizontal offset from the final position back to the original
+    position (first.x - last.x).
+  - `dy` -- vertical offset from the final position back to the original
+    position (first.y - last.y).
+
+At progress 0.0 the element should be translated by `(dx, dy)` (appearing
+at its original position). At progress 1.0 the translation is `(0, 0)`
+(the element rests at its new position).
+-}
+type alias FlipDelta =
+    { id : String
+    , dx : Float
+    , dy : Float
+    }
+
+
+{-| An empty FLIP state with no captured positions.
+
+Use this as the initial value in your model before any positions have
+been measured.
+
+    init =
+        { flipState = DnD.Flip.emptyState
+        , items = [ ... ]
+        }
+-}
+emptyState : FlipState
+emptyState =
+    []
+
+
+{-| Capture the "first" positions of elements before a reorder.
+
+Store the returned `FlipState` in your model. After reordering your data,
+call `computeFlip` with the new positions to get the inverse transforms.
+
+    onBeforeReorder rects model =
+        { model | flipState = captureFirst rects }
+-}
+captureFirst : List ElementRect -> FlipState
+captureFirst rects =
+    rects
+
+
+{-| Compute inverse transforms by comparing "first" positions to "last" positions.
+
+For each element present in both the captured first state and the provided
+last positions, computes `dx = first.x - last.x` and `dy = first.y - last.y`.
+Elements that appear in only one list are excluded from the result, since
+no meaningful delta can be computed for them.
+
+    deltas = computeFlip model.flipState newRects
+    -- [ { id = "item-1", dx = -120, dy = 0 }, { id = "item-2", dx = 120, dy = 0 } ]
+-}
+computeFlip : FlipState -> List ElementRect -> List FlipDelta
+computeFlip firstState lastRects =
+    List.filterMap (computeDeltaForElement firstState) lastRects
+
+
+{-| Compute the delta for a single element by finding its "first" position.
+
+Returns `Nothing` if the element was not present in the first state,
+meaning it is a newly added element that has no previous position.
+-}
+computeDeltaForElement : FlipState -> ElementRect -> Maybe FlipDelta
+computeDeltaForElement firstState lastElement =
+    findById lastElement.id firstState
+        |> Maybe.map
+            (\firstElement ->
+                { id = lastElement.id
+                , dx = firstElement.rect.x - lastElement.rect.x
+                , dy = firstElement.rect.y - lastElement.rect.y
+                }
+            )
+
+
+{-| Find an element by id in a list of element rects.
+
+Performs a linear scan. For typical drag-and-drop lists (tens to low
+hundreds of items) this is faster than building a dictionary.
+-}
+findById : String -> List ElementRect -> Maybe ElementRect
+findById targetId rects =
+    case rects of
+        [] ->
+            Nothing
+
+        first :: rest ->
+            if first.id == targetId then
+                Just first
+
+            else
+                findById targetId rest
+
+
+{-| Look up the computed delta for a specific element by id.
+
+Returns `Nothing` if the element was not part of the FLIP computation.
+Useful for conditionally applying flip transforms only to elements that
+actually moved.
+
+    case lookupDelta "item-3" deltas of
+        Just delta ->
+            flipStyles delta progress
+
+        Nothing ->
+            []
+-}
+lookupDelta : String -> List FlipDelta -> Maybe FlipDelta
+lookupDelta targetId deltas =
+    case deltas of
+        [] ->
+            Nothing
+
+        first :: rest ->
+            if first.id == targetId then
+                Just first
+
+            else
+                lookupDelta targetId rest
+
+
+{-| CSS styles that animate an element from its inverted position to its
+final position based on a progress value.
+
+  - `delta` -- the inverse transform computed by `computeFlip`.
+  - `progress` -- animation progress from 0.0 (fully inverted, element
+    appears at its original position) to 1.0 (no transform, element
+    rests at its new position).
+
+The returned styles include a `transform: translate(...)` that linearly
+interpolates between the full inverse offset and zero, plus
+`will-change: transform` for compositor optimization.
+
+    flipStyles { id = "item-1", dx = -120, dy = 0 } 0.0
+    -- transform: translate(-120px, 0px); will-change: transform;
+
+    flipStyles { id = "item-1", dx = -120, dy = 0 } 1.0
+    -- transform: translate(0px, 0px); will-change: transform;
+-}
+flipStyles : FlipDelta -> Float -> List Style
+flipStyles delta progress =
+    let
+        clampedProgress =
+            clamp 0.0 1.0 progress
+
+        currentDx =
+            delta.dx * (1.0 - clampedProgress)
+
+        currentDy =
+            delta.dy * (1.0 - clampedProgress)
+    in
+    [ Css.transform
+        [ Value.translate (Value.px currentDx) (Value.px currentDy) ]
+    , Css.willChange "transform"
+    ]
+
+
+{-| Apply a FLIP transform to an element, including a CSS transition for
+smooth animation over a specified duration.
+
+This is a convenience function that combines `flipStyles` at progress 0.0
+(the fully inverted position) with a CSS transition so the browser
+animates the transform removal automatically. Apply these styles
+immediately after the DOM reorder; the browser will animate from the
+inverted position to the final position over `durationMs` milliseconds.
+
+    applyFlipTransform { id = "item-1", dx = -120, dy = 0 } 300
+    -- [ transform: translate(-120px, 0px)
+    -- , transition: transform 300ms cubic-bezier(0.25, 0.1, 0.25, 1.0)
+    -- , will-change: transform
+    -- ]
+
+After the transition completes, remove these styles so the element
+returns to normal document flow without residual transforms.
+-}
+applyFlipTransform : FlipDelta -> Float -> List Style
+applyFlipTransform delta durationMs =
+    [ Css.transform
+        [ Value.translate (Value.px delta.dx) (Value.px delta.dy) ]
+    , Transition.transitionProperty
+        "transform"
+        (Value.ms durationMs)
+        (Value.cubicBezier 0.25 0.1 0.25 1.0)
+        (Value.ms 0)
+    , Css.willChange "transform"
+    ]
+
+
+{-| Clamp a value between a minimum and maximum. -}
+clamp : Float -> Float -> Float -> Float
+clamp low high value =
+    if value < low then
+        low
+
+    else if value > high then
+        high
+
+    else
+        value

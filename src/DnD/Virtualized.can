@@ -1,0 +1,495 @@
+module DnD.Virtualized exposing
+    ( VirtualConfig
+    , VirtualState
+    , VirtualItem
+    , HeightMode(..)
+    , defaultConfig
+    , init
+    , updateScroll
+    , visibleItems
+    , visibleRange
+    , totalHeight
+    , itemOffset
+    , containerAttrs
+    , increasedOverscanDuringDrag
+    )
+
+
+{-| Windowed/virtualized rendering for large lists during drag-and-drop.
+
+When a drag-and-drop list contains 1000+ items, rendering every DOM node
+simultaneously causes frame drops and sluggish interactions. This module
+calculates which items fall within the visible viewport (plus configurable
+overscan buffers) so only those items are rendered.
+
+During an active drag, a larger overscan buffer is applied to prevent
+items from popping in and out as the user scrolls rapidly while dragging.
+
+Two height modes are supported:
+
+  - **FixedHeight** -- all items share a constant height, enabling O(1)
+    offset and range calculations via simple multiplication.
+  - **VariableHeight** -- each item's height is determined by a function
+    of its index, requiring O(n) cumulative summation up to the queried
+    position.
+
+# Configuration
+
+@docs VirtualConfig, HeightMode, defaultConfig
+
+# State
+
+@docs VirtualState, init, updateScroll, increasedOverscanDuringDrag
+
+# Querying
+
+@docs VirtualItem, visibleRange, visibleItems, totalHeight, itemOffset
+
+# View Helpers
+
+@docs containerAttrs
+
+-}
+
+
+import Css exposing (Style(..))
+import Css.Value as Value
+import Html exposing (Html, Attribute)
+
+
+-- TYPES
+
+
+{-| Configuration for the virtualized list.
+
+  - `itemHeight`: How item heights are determined. Use `FixedHeight` for
+    uniform lists or `VariableHeight` when items have different sizes.
+  - `overscan`: Number of extra items rendered above and below the visible
+    viewport during normal scrolling. Higher values reduce flicker during
+    fast scrolling at the cost of rendering more DOM nodes.
+  - `dragOverscan`: Additional overscan items added during an active drag
+    operation. This is added on top of the base `overscan` to provide a
+    larger buffer while the user drags, preventing visible pop-in.
+  - `containerHeight`: Height of the scroll viewport in pixels.
+
+-}
+type alias VirtualConfig =
+    { itemHeight : HeightMode
+    , overscan : Int
+    , dragOverscan : Int
+    , containerHeight : Float
+    }
+
+
+{-| How item heights are determined.
+
+  - `FixedHeight Float` -- every item has the same height in pixels.
+    Enables O(1) offset calculations.
+  - `VariableHeight (Int -> Float)` -- a function from item index to
+    height in pixels. Offset calculations require summing heights from
+    index 0, making them O(n).
+
+-}
+type HeightMode
+    = FixedHeight Float
+    | VariableHeight (Int -> Float)
+
+
+{-| The current scroll and drag state of the virtualized container.
+
+  - `scrollTop`: Current vertical scroll position in pixels.
+  - `totalItems`: Total number of items in the full list.
+  - `isDragging`: Whether a drag operation is currently active. When
+    True, the `dragOverscan` value from `VirtualConfig` is added to the
+    base overscan for a larger render buffer.
+
+-}
+type alias VirtualState =
+    { scrollTop : Float
+    , totalItems : Int
+    , isDragging : Bool
+    }
+
+
+{-| A single item prepared for rendering with its position metadata.
+
+  - `item`: The original item value from the source list.
+  - `index`: The item's index in the full list (0-based).
+  - `offsetY`: The Y pixel offset from the top of the scrollable content
+    where this item should be positioned.
+  - `height`: The height of this item in pixels.
+
+-}
+type alias VirtualItem a =
+    { item : a
+    , index : Int
+    , offsetY : Float
+    , height : Float
+    }
+
+
+
+-- DEFAULTS
+
+
+{-| Sensible default configuration for a virtualized list.
+
+Uses 50px fixed item height, 5 items of overscan, 10 additional items
+of overscan during drag, and a 500px viewport height. These values work
+well for typical list items like table rows or card entries.
+
+    DnD.Virtualized.defaultConfig
+    -- { itemHeight = FixedHeight 50
+    -- , overscan = 5
+    -- , dragOverscan = 10
+    -- , containerHeight = 500
+    -- }
+
+-}
+defaultConfig : VirtualConfig
+defaultConfig =
+    { itemHeight = FixedHeight 50
+    , overscan = 5
+    , dragOverscan = 10
+    , containerHeight = 500
+    }
+
+
+
+-- INITIALIZATION
+
+
+{-| Initialize virtualized state with a total item count.
+
+Sets the scroll position to 0 (top of list) and marks no active drag.
+The `totalItems` value should match the length of the list you will
+pass to `visibleItems`.
+
+    init 2000
+    -- { scrollTop = 0, totalItems = 2000, isDragging = False }
+
+-}
+init : Int -> VirtualState
+init count =
+    { scrollTop = 0
+    , totalItems = max 0 count
+    , isDragging = False
+    }
+
+
+
+-- STATE UPDATES
+
+
+{-| Update the scroll position.
+
+Call this when the container's scroll event fires, passing the new
+`scrollTop` value. Negative values are clamped to 0.
+
+    updateScroll 350.0 state
+    -- { state | scrollTop = 350.0 }
+
+-}
+updateScroll : Float -> VirtualState -> VirtualState
+updateScroll newScrollTop state =
+    { state | scrollTop = max 0 newScrollTop }
+
+
+{-| Set the dragging flag to control overscan behavior.
+
+When `True`, `visibleRange` uses the sum of `overscan` and `dragOverscan`
+from the config, providing a larger buffer so items do not pop in and out
+during rapid drag-scroll interactions. When `False`, only the base
+`overscan` is used.
+
+    increasedOverscanDuringDrag True state
+    -- { state | isDragging = True }
+
+-}
+increasedOverscanDuringDrag : Bool -> VirtualState -> VirtualState
+increasedOverscanDuringDrag dragging state =
+    { state | isDragging = dragging }
+
+
+
+-- QUERYING
+
+
+{-| Calculate the range of item indices that should be rendered.
+
+Returns a record with `startIndex` and `endIndex` (inclusive) representing
+the items visible in the viewport plus overscan. During an active drag,
+the overscan is increased by `dragOverscan` for a smoother experience.
+
+Both indices are clamped to valid bounds: `startIndex >= 0` and
+`endIndex < totalItems`.
+
+For `FixedHeight`, the calculation is O(1). For `VariableHeight`, finding
+the start index requires scanning from index 0, making it O(n) in the
+worst case.
+
+    visibleRange config state
+    -- { startIndex = 3, endIndex = 17 }
+
+-}
+visibleRange : VirtualConfig -> VirtualState -> { startIndex : Int, endIndex : Int }
+visibleRange config state =
+    let
+        effectiveOverscan =
+            activeOverscan config state
+
+        rawStart =
+            findStartIndex config state.scrollTop 0
+
+        rawEnd =
+            findEndIndex config (state.scrollTop + config.containerHeight) rawStart
+
+        clampedStart =
+            max 0 (rawStart - effectiveOverscan)
+
+        clampedEnd =
+            min (state.totalItems - 1) (rawEnd + effectiveOverscan)
+    in
+    { startIndex = clampedStart
+    , endIndex = max clampedStart clampedEnd
+    }
+
+
+{-| Extract the visible items from the full list with their position metadata.
+
+Given a config, state, and the complete list of items, returns only the
+items within the visible range (as determined by `visibleRange`) wrapped
+in `VirtualItem` records that include each item's index, Y offset, and
+height.
+
+The returned items are in list order, suitable for rendering inside an
+absolutely-positioned container where each item is placed at its `offsetY`.
+
+    visibleItems config state allItems
+    -- [ { item = ..., index = 3, offsetY = 150, height = 50 }
+    -- , { item = ..., index = 4, offsetY = 200, height = 50 }
+    -- , ...
+    -- ]
+
+-}
+visibleItems : VirtualConfig -> VirtualState -> List a -> List (VirtualItem a)
+visibleItems config state items =
+    let
+        range =
+            visibleRange config state
+    in
+    extractRange config range.startIndex range.endIndex 0 items
+
+
+{-| Calculate the total scrollable height of all items combined.
+
+For `FixedHeight`, this is simply `itemCount * height`. For
+`VariableHeight`, all individual heights are summed.
+
+    totalHeight config state
+    -- 100000.0 (for 2000 items at 50px each)
+
+-}
+totalHeight : VirtualConfig -> VirtualState -> Float
+totalHeight config state =
+    sumHeights config 0 state.totalItems
+
+
+{-| Calculate the Y pixel offset for an item at a given index.
+
+For `FixedHeight`, this is `index * height` (O(1)). For `VariableHeight`,
+this sums all heights from index 0 up to (but not including) the given
+index (O(n)).
+
+Returns 0 for index 0. Negative indices are treated as 0.
+
+    itemOffset config 10
+    -- 500.0 (for FixedHeight 50)
+
+-}
+itemOffset : VirtualConfig -> Int -> Float
+itemOffset config index =
+    sumHeights config 0 (max 0 index)
+
+
+
+-- VIEW HELPERS
+
+
+{-| Generate style attributes for the scroll container element.
+
+Returns a list of `Html.Attribute` values that set:
+
+  - `overflow-y: auto` -- enables vertical scrolling when content
+    exceeds the container height.
+  - `height` -- set to `containerHeight` from the config so the
+    viewport is correctly sized.
+  - `position: relative` -- establishes a positioning context for
+    absolutely-positioned child items.
+
+Apply these attributes to the outer `div` that wraps your virtualized
+list content.
+
+    div (containerAttrs config state ++ otherAttrs)
+        [ innerContent ]
+
+-}
+containerAttrs : VirtualConfig -> VirtualState -> List (Attribute msg)
+containerAttrs config _ =
+    [ Css.inlineStyle
+        [ Css.overflowY Value.auto
+        , Css.height (Value.px config.containerHeight)
+        , Css.position Value.relative
+        ]
+    ]
+
+
+
+-- INTERNAL HELPERS
+
+
+{-| Calculate the effective overscan count based on drag state. -}
+activeOverscan : VirtualConfig -> VirtualState -> Int
+activeOverscan config state =
+    if state.isDragging then
+        config.overscan + config.dragOverscan
+
+    else
+        config.overscan
+
+
+{-| Get the height of an item at a given index. -}
+heightAt : VirtualConfig -> Int -> Float
+heightAt config index =
+    case config.itemHeight of
+        FixedHeight h ->
+            h
+
+        VariableHeight fn ->
+            fn index
+
+
+{-| Sum heights from startIdx (inclusive) to endIdx (exclusive).
+
+Accumulates heights iteratively. For FixedHeight, this simplifies to
+multiplication, avoiding unnecessary iteration.
+-}
+sumHeights : VirtualConfig -> Int -> Int -> Float
+sumHeights config startIdx endIdx =
+    case config.itemHeight of
+        FixedHeight h ->
+            toFloat (max 0 (endIdx - startIdx)) * h
+
+        VariableHeight fn ->
+            sumHeightsAccum fn startIdx endIdx 0
+
+
+{-| Accumulator loop for summing variable heights. -}
+sumHeightsAccum : (Int -> Float) -> Int -> Int -> Float -> Float
+sumHeightsAccum fn current endIdx acc =
+    if current >= endIdx then
+        acc
+
+    else
+        sumHeightsAccum fn (current + 1) endIdx (acc + fn current)
+
+
+{-| Find the first item index whose bottom edge is past the scroll position.
+
+For FixedHeight, this is a direct division. For VariableHeight, we scan
+from index 0 accumulating heights until we pass the target offset.
+-}
+findStartIndex : VirtualConfig -> Float -> Int -> Int
+findStartIndex config scrollTop _ =
+    case config.itemHeight of
+        FixedHeight h ->
+            if h <= 0 then
+                0
+
+            else
+                floor (scrollTop / h)
+
+        VariableHeight fn ->
+            scanForStart fn scrollTop 0 0
+
+
+{-| Scan items from the top to find the first visible index.
+
+Accumulates heights until the cumulative offset exceeds scrollTop,
+meaning the previous item is partially visible.
+-}
+scanForStart : (Int -> Float) -> Float -> Int -> Float -> Int
+scanForStart fn scrollTop index acc =
+    if acc + fn index > scrollTop then
+        index
+
+    else
+        scanForStart fn scrollTop (index + 1) (acc + fn index)
+
+
+{-| Find the last item index whose top edge is before the bottom of the viewport.
+
+For FixedHeight, this is a direct division. For VariableHeight, we
+continue scanning from the start index.
+-}
+findEndIndex : VirtualConfig -> Float -> Int -> Int
+findEndIndex config viewportBottom startIdx =
+    case config.itemHeight of
+        FixedHeight h ->
+            if h <= 0 then
+                0
+
+            else
+                ceiling (viewportBottom / h)
+
+        VariableHeight fn ->
+            scanForEnd fn viewportBottom startIdx (sumHeightsAccum fn 0 startIdx 0)
+
+
+{-| Scan items to find the last index within the viewport bottom. -}
+scanForEnd : (Int -> Float) -> Float -> Int -> Float -> Int
+scanForEnd fn viewportBottom index acc =
+    if acc >= viewportBottom then
+        index
+
+    else
+        scanForEnd fn viewportBottom (index + 1) (acc + fn index)
+
+
+{-| Extract items in the range [startIdx, endIdx] from the list.
+
+Walks the list, skipping items before startIdx, collecting items
+within the range, and stopping after endIdx. Each collected item is
+wrapped with its index, Y offset, and height.
+-}
+extractRange : VirtualConfig -> Int -> Int -> Int -> List a -> List (VirtualItem a)
+extractRange config startIdx endIdx currentIdx items =
+    extractRangeAccum config startIdx endIdx currentIdx items []
+        |> List.reverse
+
+
+{-| Accumulator for extractRange that builds the result list in reverse. -}
+extractRangeAccum : VirtualConfig -> Int -> Int -> Int -> List a -> List (VirtualItem a) -> List (VirtualItem a)
+extractRangeAccum config startIdx endIdx currentIdx items acc =
+    if currentIdx > endIdx then
+        acc
+
+    else
+        case items of
+            [] ->
+                acc
+
+            first :: rest ->
+                if currentIdx < startIdx then
+                    extractRangeAccum config startIdx endIdx (currentIdx + 1) rest acc
+
+                else
+                    let
+                        virtualItem =
+                            { item = first
+                            , index = currentIdx
+                            , offsetY = itemOffset config currentIdx
+                            , height = heightAt config currentIdx
+                            }
+                    in
+                    extractRangeAccum config startIdx endIdx (currentIdx + 1) rest (virtualItem :: acc)

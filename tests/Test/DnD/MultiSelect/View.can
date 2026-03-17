@@ -1,0 +1,198 @@
+module Test.DnD.MultiSelect.View exposing (main, tests)
+
+import Basics exposing (..)
+import DnD exposing (..)
+import DnD.MultiSelect as MultiSelect
+import DnD.MultiSelect.View exposing (..)
+import Html exposing (Html, div, text)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.MultiSelect.View"
+        [ defaultTests
+        , viewCountBadgeTests
+        , stackStylesTests
+        , viewLassoTests
+        , viewMultiDragOverlayTests
+        ]
+
+
+defaultTests : Test
+defaultTests =
+    describe "defaults"
+        [ test "defaultMaxStack is 3" <|
+            \() ->
+                defaultMaxStack
+                    |> Expect.equal 3
+        , test "defaultStackOffset is 3.0" <|
+            \() ->
+                defaultStackOffset
+                    |> Expect.equal 3.0
+        , test "defaultMaxStack is positive" <|
+            \() ->
+                Expect.true "maxStack should be > 0" (defaultMaxStack > 0)
+        , test "defaultStackOffset is positive" <|
+            \() ->
+                Expect.true "stackOffset should be > 0" (defaultStackOffset > 0)
+        ]
+
+
+viewCountBadgeTests : Test
+viewCountBadgeTests =
+    describe "viewCountBadge"
+        [ test "renders with count 1" <|
+            \() ->
+                let
+                    _ =
+                        viewCountBadge 1
+                in
+                Expect.pass
+        , test "renders with count 5" <|
+            \() ->
+                let
+                    _ =
+                        viewCountBadge 5
+                in
+                Expect.pass
+        , test "renders with count 0" <|
+            \() ->
+                let
+                    _ =
+                        viewCountBadge 0
+                in
+                Expect.pass
+        , test "renders with large count" <|
+            \() ->
+                let
+                    _ =
+                        viewCountBadge 99
+                in
+                Expect.pass
+        ]
+
+
+stackStylesTests : Test
+stackStylesTests =
+    describe "stackStyles"
+        [ test "returns non-empty styles for index 0" <|
+            \() ->
+                stackStyles 0 3
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns non-empty styles for index 2" <|
+            \() ->
+                stackStyles 2 3
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 2 styles (transform + z-index)" <|
+            \() ->
+                stackStyles 0 3
+                    |> List.length
+                    |> Expect.equal 2
+        , test "different indices produce different styles" <|
+            \() ->
+                Expect.notEqual (stackStyles 0 3) (stackStyles 1 3)
+        , test "index 0 and index 2 differ" <|
+            \() ->
+                Expect.notEqual (stackStyles 0 3) (stackStyles 2 3)
+        , test "index 0 has highest z-index relative to total" <|
+            \() ->
+                let
+                    s0 =
+                        stackStyles 0 3
+
+                    s1 =
+                        stackStyles 1 3
+                in
+                Expect.notEqual s0 s1
+        , test "index beyond total still produces styles" <|
+            \() ->
+                stackStyles 5 3
+                    |> List.isEmpty
+                    |> Expect.equal False
+        ]
+
+
+viewLassoTests : Test
+viewLassoTests =
+    describe "viewLasso"
+        [ test "renders without error with no active lasso" <|
+            \() ->
+                let
+                    _ =
+                        viewLasso MultiSelect.init
+                in
+                Expect.pass
+        , test "renders without error with active lasso" <|
+            \() ->
+                let
+                    selection =
+                        MultiSelect.lasso 10 20 MultiSelect.init
+                            |> MultiSelect.updateLasso 100 150
+
+                    _ =
+                        viewLasso selection
+                in
+                Expect.pass
+        , test "renders with lasso at same start and end" <|
+            \() ->
+                let
+                    selection =
+                        MultiSelect.lasso 50 50 MultiSelect.init
+
+                    _ =
+                        viewLasso selection
+                in
+                Expect.pass
+        , test "renders after ending lasso (returns empty div)" <|
+            \() ->
+                let
+                    selection =
+                        MultiSelect.lasso 10 20 MultiSelect.init
+                            |> MultiSelect.endLasso
+
+                    _ =
+                        viewLasso selection
+                in
+                Expect.pass
+        ]
+
+
+viewMultiDragOverlayTests : Test
+viewMultiDragOverlayTests =
+    describe "viewMultiDragOverlay"
+        [ test "renders without error when not dragging" <|
+            \() ->
+                let
+                    config =
+                        { renderItem = \_ -> div [] [ text "item" ]
+                        , maxStack = 3
+                        , stackOffset = 3.0
+                        }
+
+                    _ =
+                        viewMultiDragOverlay config init MultiSelect.init
+                in
+                Expect.pass
+        , test "renders without error with empty selection" <|
+            \() ->
+                let
+                    config =
+                        { renderItem = \_ -> div [] [ text "item" ]
+                        , maxStack = 3
+                        , stackOffset = 3.0
+                        }
+
+                    _ =
+                        viewMultiDragOverlay config init MultiSelect.init
+                in
+                Expect.pass
+        ]

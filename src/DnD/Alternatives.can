@@ -1,0 +1,520 @@
+module DnD.Alternatives exposing
+    ( SortAction(..)
+    , viewSortControls
+    , viewMoveToColumn
+    , viewTreeMoveMenu
+    , viewGridControls
+    , applySortAction
+    )
+
+
+{-| Non-drag alternative controls for motor-impaired users.
+
+Most drag-and-drop libraries assume pointer dexterity. This module provides
+button-based and dropdown-based fallback controls that achieve the same
+operations — reordering, moving between containers, tree manipulation, and
+grid placement — without requiring any dragging.
+
+These controls should be rendered alongside (or as an alternative to)
+drag-enabled elements, so that users who cannot perform drag gestures
+can still perform all supported operations via standard buttons, selects,
+and number inputs.
+
+# Sort Actions
+@docs SortAction, applySortAction
+
+# Sort Controls
+@docs viewSortControls
+
+# Column Move Controls
+@docs viewMoveToColumn
+
+# Tree Move Controls
+@docs viewTreeMoveMenu
+
+# Grid Controls
+@docs viewGridControls
+
+-}
+
+
+import Css
+import Css.Value as Value
+import Html exposing (Html, Attribute)
+import Html.Attributes
+import Html.Events
+import Json.Decode as Json
+
+
+-- SORT ACTION
+
+
+{-| An action that moves an item within a list.
+
+Each variant specifies which item to move and where:
+
+  - `MoveUp`: Swap with the previous item. No effect if already first.
+  - `MoveDown`: Swap with the next item. No effect if already last.
+  - `MoveToTop`: Move to the beginning of the list.
+  - `MoveToBottom`: Move to the end of the list.
+  - `MoveToPosition`: Move to a specific zero-based index, clamped to
+    valid bounds.
+
+-}
+type SortAction id
+    = MoveUp id
+    | MoveDown id
+    | MoveToTop id
+    | MoveToBottom id
+    | MoveToPosition id Int
+
+
+{-| Apply a sort action to a list of items.
+
+Returns the list with the specified item moved to its new position. If
+the action is impossible (item not found, already at boundary for
+relative moves), the list is returned unchanged.
+
+    applySortAction (MoveUp "b") ["a", "b", "c"]
+    --> ["b", "a", "c"]
+
+    applySortAction (MoveToTop "c") ["a", "b", "c"]
+    --> ["c", "a", "b"]
+
+    applySortAction (MoveDown "c") ["a", "b", "c"]
+    --> ["a", "b", "c"]
+
+-}
+applySortAction : SortAction id -> List id -> List id
+applySortAction action items =
+    case action of
+        MoveUp targetId ->
+            moveUpInList targetId items
+
+        MoveDown targetId ->
+            moveDownInList targetId items
+
+        MoveToTop targetId ->
+            moveToTopInList targetId items
+
+        MoveToBottom targetId ->
+            moveToBottomInList targetId items
+
+        MoveToPosition targetId pos ->
+            moveToPositionInList targetId pos items
+
+
+
+-- SORT ACTION HELPERS
+
+
+{-| Move an item one position earlier in the list by swapping with its
+predecessor. Returns the list unchanged if the item is not found or
+is already at position zero.
+-}
+moveUpInList : id -> List id -> List id
+moveUpInList targetId items =
+    let
+        indexed =
+            List.indexedMap Tuple.pair items
+
+        maybeIndex =
+            findIndexOf targetId indexed
+    in
+    applyIfPositive items (\idx -> swapAt (idx - 1) idx items) maybeIndex
+
+
+{-| Move an item one position later in the list by swapping with its
+successor. Returns the list unchanged if the item is not found or
+is already at the last position.
+-}
+moveDownInList : id -> List id -> List id
+moveDownInList targetId items =
+    let
+        indexed =
+            List.indexedMap Tuple.pair items
+
+        maybeIndex =
+            findIndexOf targetId indexed
+
+        len =
+            List.length items
+    in
+    applyIfBelow len items (\idx -> swapAt idx (idx + 1) items) maybeIndex
+
+
+{-| Move an item to the front of the list. Returns the list unchanged
+if the item is not found.
+-}
+moveToTopInList : id -> List id -> List id
+moveToTopInList targetId items =
+    let
+        ( matching, rest ) =
+            List.partition (\item -> item == targetId) items
+    in
+    List.append matching rest
+
+
+{-| Move an item to the end of the list. Returns the list unchanged
+if the item is not found.
+-}
+moveToBottomInList : id -> List id -> List id
+moveToBottomInList targetId items =
+    let
+        ( matching, rest ) =
+            List.partition (\item -> item == targetId) items
+    in
+    List.append rest matching
+
+
+{-| Move an item to a specific zero-based index, clamped to valid bounds.
+Returns the list unchanged if the item is not found.
+-}
+moveToPositionInList : id -> Int -> List id -> List id
+moveToPositionInList targetId pos items =
+    let
+        without =
+            List.filter (\item -> item /= targetId) items
+
+        clampedPos =
+            clamp 0 (List.length without) pos
+    in
+    if List.length without == List.length items then
+        items
+    else
+        insertAtIndex clampedPos targetId without
+
+
+{-| Insert a value at a specific index in a list. -}
+insertAtIndex : Int -> a -> List a -> List a
+insertAtIndex idx val list =
+    List.append (List.take idx list) (val :: List.drop idx list)
+
+
+{-| Find the index of a target item in an indexed list. -}
+findIndexOf : id -> List ( Int, id ) -> Maybe Int
+findIndexOf targetId indexed =
+    Maybe.map Tuple.first (List.head (List.filter (\( _, item ) -> item == targetId) indexed))
+
+
+{-| Apply a function to the index only if it is positive (greater than
+zero), indicating the item can move up. Returns the default otherwise.
+-}
+applyIfPositive : a -> (Int -> a) -> Maybe Int -> a
+applyIfPositive default f maybeIdx =
+    Maybe.withDefault default (Maybe.andThen (\idx -> if idx > 0 then Just (f idx) else Nothing) maybeIdx)
+
+
+{-| Apply a function to the index only if the item can move down
+(index + 1 < length). Returns the default otherwise.
+-}
+applyIfBelow : Int -> a -> (Int -> a) -> Maybe Int -> a
+applyIfBelow len default f maybeIdx =
+    Maybe.withDefault default (Maybe.andThen (\idx -> if idx + 1 < len then Just (f idx) else Nothing) maybeIdx)
+
+
+{-| Swap the elements at two indices in a list. If either index is out
+of range, the list is returned unchanged.
+-}
+swapAt : Int -> Int -> List a -> List a
+swapAt i j items =
+    let
+        arr =
+            List.indexedMap Tuple.pair items
+
+        maybeA =
+            Maybe.map Tuple.second (List.head (List.filter (\( idx, _ ) -> idx == i) arr))
+
+        maybeB =
+            Maybe.map Tuple.second (List.head (List.filter (\( idx, _ ) -> idx == j) arr))
+    in
+    Maybe.withDefault items (Maybe.map2 (\a b -> swapValues i j a b items) maybeA maybeB)
+
+
+{-| Produce a new list with values at positions i and j exchanged. -}
+swapValues : Int -> Int -> a -> a -> List a -> List a
+swapValues i j a b items =
+    List.indexedMap (\idx val -> swapSingle idx i j a b val) items
+
+
+{-| Return the swapped value for a single position. -}
+swapSingle : Int -> Int -> Int -> a -> a -> a -> a
+swapSingle idx i j a b val =
+    if idx == i then
+        b
+    else if idx == j then
+        a
+    else
+        val
+
+
+
+-- VIEW: SORT CONTROLS
+
+
+{-| Render up/down/top/bottom buttons for a sortable item.
+
+Provides four buttons that allow a user to reorder an item within a list
+without dragging. Buttons are automatically disabled at list boundaries
+(e.g., "Move up" is disabled for the first item). Each button includes
+an `aria-label` for screen reader accessibility.
+
+    viewSortControls SortMsg itemId { isFirst = False, isLast = True }
+
+-}
+viewSortControls : (SortAction id -> msg) -> id -> { isFirst : Bool, isLast : Bool } -> Html msg
+viewSortControls toMsg itemId bounds =
+    Html.div
+        [ Css.inlineStyle
+            [ Css.display Value.inlineFlex
+            , Css.gap (Value.px 4)
+            , Css.alignItems Value.center
+            ]
+        , Html.Attributes.attribute "role" "group"
+        , Html.Attributes.attribute "aria-label" "Sort controls"
+        ]
+        [ controlButton "⇤" "Move to top" bounds.isFirst (toMsg (MoveToTop itemId))
+        , controlButton "↑" "Move up" bounds.isFirst (toMsg (MoveUp itemId))
+        , controlButton "↓" "Move down" bounds.isLast (toMsg (MoveDown itemId))
+        , controlButton "⇥" "Move to bottom" bounds.isLast (toMsg (MoveToBottom itemId))
+        ]
+
+
+{-| Render a single control button with label, aria-label, disabled
+state, and consistent styling. Used by both sort and tree controls.
+-}
+controlButton : String -> String -> Bool -> msg -> Html msg
+controlButton label ariaLabel isDisabled msg =
+    Html.button
+        [ Html.Events.onClick msg
+        , Html.Attributes.disabled isDisabled
+        , Html.Attributes.attribute "aria-label" ariaLabel
+        , Css.inlineStyle
+            [ Css.padding2 (Value.px 4) (Value.px 8)
+            , Css.border (Value.px 1) Value.solid (Value.hex "ccc")
+            , Css.borderRadius (Value.px 4)
+            , Css.backgroundColor (Value.hex (if isDisabled then "f0f0f0" else "fff"))
+            , Css.cursor (if isDisabled then Value.notAllowed else Value.pointer)
+            , Css.fontSize (Value.px 14)
+            , Css.lineHeight (Value.num 1)
+            ]
+        ]
+        [ Html.text label ]
+
+
+
+-- VIEW: MOVE TO COLUMN
+
+
+{-| Render a dropdown select for moving a kanban card to a different column.
+
+Displays a `<select>` element listing available columns. When the user
+selects a column, the provided message constructor fires with the item id
+and the selected column id. This is the non-drag alternative for kanban
+cross-column moves.
+
+The column list uses index-based selection internally. When the selected
+index is out of range (which should not occur in practice), no message
+is produced and the event is silently ignored via a failing decoder.
+
+    viewMoveToColumn MoveToColumn cardId
+        [ { id = "todo", title = "To Do" }
+        , { id = "doing", title = "In Progress" }
+        , { id = "done", title = "Done" }
+        ]
+
+-}
+viewMoveToColumn : (id -> columnId -> msg) -> id -> List { id : columnId, title : String } -> Html msg
+viewMoveToColumn toMsg itemId columns =
+    Html.div
+        [ Css.inlineStyle
+            [ Css.display Value.inlineFlex
+            , Css.alignItems Value.center
+            , Css.gap (Value.px 8)
+            ]
+        ]
+        [ Html.label
+            [ Css.inlineStyle [ Css.fontSize (Value.px 14) ] ]
+            [ Html.text "Move to:" ]
+        , Html.select
+            [ Html.Events.on "change" (columnChangeDecoder toMsg itemId columns)
+            , Html.Attributes.attribute "aria-label" "Move to column"
+            , Css.inlineStyle
+                [ Css.padding2 (Value.px 4) (Value.px 8)
+                , Css.border (Value.px 1) Value.solid (Value.hex "ccc")
+                , Css.borderRadius (Value.px 4)
+                , Css.fontSize (Value.px 14)
+                ]
+            ]
+            (List.map columnOption columns)
+        ]
+
+
+{-| JSON decoder that reads `event.target.selectedIndex` and maps it
+to the corresponding column's message. Fails the decoder if the index
+is out of range, which causes Elm to silently ignore the event.
+-}
+columnChangeDecoder : (id -> columnId -> msg) -> id -> List { id : columnId, title : String } -> Json.Decoder msg
+columnChangeDecoder toMsg itemId columns =
+    Json.andThen
+        (\selectedIndex ->
+            Maybe.withDefault (Json.fail "index out of range")
+                (Maybe.map (\col -> Json.succeed (toMsg itemId col.id))
+                    (listGetAt selectedIndex columns)
+                )
+        )
+        (Json.at [ "target", "selectedIndex" ] Json.int)
+
+
+{-| Render an option element for a single column. -}
+columnOption : { id : columnId, title : String } -> Html msg
+columnOption col =
+    Html.option [] [ Html.text col.title ]
+
+
+{-| Get the element at a specific index in a list. -}
+listGetAt : Int -> List a -> Maybe a
+listGetAt idx list =
+    List.head (List.drop idx list)
+
+
+
+-- VIEW: TREE MOVE MENU
+
+
+{-| Render controls for tree node movement.
+
+Provides four buttons for moving a node within a tree structure:
+
+  - **Move up**: Swap with the previous sibling.
+  - **Move down**: Swap with the next sibling.
+  - **Indent**: Make the node a child of its previous sibling.
+  - **Outdent**: Make the node a sibling of its parent.
+
+Each button is independently disabled based on the capabilities record.
+This is the non-drag alternative for tree rearrangement.
+
+    viewTreeMoveMenu
+        { onMoveUp = TreeMoveUp nodeId
+        , onMoveDown = TreeMoveDown nodeId
+        , onIndent = TreeIndent nodeId
+        , onOutdent = TreeOutdent nodeId
+        }
+        { canMoveUp = True
+        , canMoveDown = True
+        , canIndent = False
+        , canOutdent = True
+        }
+
+-}
+viewTreeMoveMenu :
+    { onMoveUp : msg, onMoveDown : msg, onIndent : msg, onOutdent : msg }
+    -> { canMoveUp : Bool, canMoveDown : Bool, canIndent : Bool, canOutdent : Bool }
+    -> Html msg
+viewTreeMoveMenu actions capabilities =
+    Html.div
+        [ Css.inlineStyle
+            [ Css.display Value.inlineFlex
+            , Css.gap (Value.px 4)
+            , Css.alignItems Value.center
+            ]
+        , Html.Attributes.attribute "role" "group"
+        , Html.Attributes.attribute "aria-label" "Tree move controls"
+        ]
+        [ controlButton "↑" "Move up" (not capabilities.canMoveUp) actions.onMoveUp
+        , controlButton "↓" "Move down" (not capabilities.canMoveDown) actions.onMoveDown
+        , controlButton "→" "Indent (make child of previous sibling)" (not capabilities.canIndent) actions.onIndent
+        , controlButton "←" "Outdent (make sibling of parent)" (not capabilities.canOutdent) actions.onOutdent
+        ]
+
+
+
+-- VIEW: GRID CONTROLS
+
+
+{-| Render position and size number inputs for a grid item.
+
+Displays four labeled number inputs for column, row, width, and height.
+When a user changes any value, the corresponding message fires with the
+new position or size. This is the non-drag alternative for repositioning
+and resizing grid items.
+
+    viewGridControls
+        { onMove = GridMove
+        , onResize = GridResize
+        }
+        { col = 1, row = 2, width = 3, height = 1 }
+
+-}
+viewGridControls :
+    { onMove : { col : Int, row : Int } -> msg
+    , onResize : { width : Int, height : Int } -> msg
+    }
+    -> { col : Int, row : Int, width : Int, height : Int }
+    -> Html msg
+viewGridControls handlers current =
+    Html.div
+        [ Css.inlineStyle
+            [ Css.display Value.grid_
+            , Css.gridTemplateColumns [ "1fr", "1fr" ]
+            , Css.gap (Value.px 8)
+            , Css.padding (Value.px 8)
+            , Css.border (Value.px 1) Value.solid (Value.hex "e0e0e0")
+            , Css.borderRadius (Value.px 6)
+            ]
+        , Html.Attributes.attribute "role" "group"
+        , Html.Attributes.attribute "aria-label" "Grid position and size controls"
+        ]
+        [ gridNumberInput "Column" current.col
+            (\newCol -> handlers.onMove { col = newCol, row = current.row })
+        , gridNumberInput "Row" current.row
+            (\newRow -> handlers.onMove { col = current.col, row = newRow })
+        , gridNumberInput "Width" current.width
+            (\newWidth -> handlers.onResize { width = newWidth, height = current.height })
+        , gridNumberInput "Height" current.height
+            (\newHeight -> handlers.onResize { width = current.width, height = newHeight })
+        ]
+
+
+{-| Render a single labeled number input for a grid property.
+Converts the string value from the input event to an Int, falling
+back to the current value if parsing fails.
+-}
+gridNumberInput : String -> Int -> (Int -> msg) -> Html msg
+gridNumberInput label currentValue toMsg =
+    Html.div
+        [ Css.inlineStyle
+            [ Css.display Value.flex_
+            , Css.flexDirection Value.column
+            , Css.gap (Value.px 2)
+            ]
+        ]
+        [ Html.label
+            [ Css.inlineStyle
+                [ Css.fontSize (Value.px 12)
+                , Css.color (Value.hex "666")
+                ]
+            ]
+            [ Html.text label ]
+        , Html.input
+            [ Html.Attributes.type_ "number"
+            , Html.Attributes.value (String.fromInt currentValue)
+            , Html.Attributes.min "0"
+            , Html.Attributes.attribute "aria-label" label
+            , Html.Events.onInput (\str -> toMsg (parseIntWithDefault currentValue str))
+            , Css.inlineStyle
+                [ Css.padding2 (Value.px 4) (Value.px 8)
+                , Css.border (Value.px 1) Value.solid (Value.hex "ccc")
+                , Css.borderRadius (Value.px 4)
+                , Css.fontSize (Value.px 14)
+                , Css.width (Value.px 80)
+                ]
+            ]
+            []
+        ]
+
+
+{-| Parse a string as an Int, returning a default value if parsing fails. -}
+parseIntWithDefault : Int -> String -> Int
+parseIntWithDefault default str =
+    Maybe.withDefault default (String.toInt str)

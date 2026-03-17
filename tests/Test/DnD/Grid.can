@@ -1,0 +1,373 @@
+module Test.DnD.Grid exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD.Grid exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+mkItem : String -> Int -> Int -> Int -> Int -> GridItem String
+mkItem id col row w h =
+    { id = id
+    , position = { col = col, row = row, width = w, height = h }
+    , isStatic = False
+    }
+
+
+mkStaticItem : String -> Int -> Int -> Int -> Int -> GridItem String
+mkStaticItem id col row w h =
+    { id = id
+    , position = { col = col, row = row, width = w, height = h }
+    , isStatic = True
+    }
+
+
+tests : Test
+tests =
+    describe "DnD.Grid"
+        [ emptyTests
+        , addItemTests
+        , removeItemTests
+        , moveItemTests
+        , collisionTests
+        , compactTests
+        , isOccupiedTests
+        , findItemTests
+        , itemPositionTests
+        , gridWidthTests
+        ]
+
+
+emptyTests : Test
+emptyTests =
+    describe "empty"
+        [ test "creates grid with no items" <|
+            \() ->
+                let
+                    grid =
+                        empty 12
+                in
+                Expect.equal [] grid.items
+        , test "sets column count" <|
+            \() ->
+                Expect.equal 12 (empty 12).columns
+        , test "clamps columns to minimum 1" <|
+            \() ->
+                Expect.equal 1 (empty 0).columns
+        , test "fromItems creates grid with items" <|
+            \() ->
+                let
+                    items =
+                        [ mkItem "a" 0 0 4 2 ]
+
+                    grid =
+                        fromItems 12 items
+                in
+                Expect.equal 1 (List.length grid.items)
+        ]
+
+
+addItemTests : Test
+addItemTests =
+    describe "addItem"
+        [ test "adds item to empty grid" <|
+            \() ->
+                let
+                    grid =
+                        empty 12
+                            |> addItem (mkItem "a" 0 0 4 2)
+                in
+                Expect.equal 1 (List.length grid.items)
+        , test "adds second non-overlapping item" <|
+            \() ->
+                let
+                    grid =
+                        empty 12
+                            |> addItem (mkItem "a" 0 0 4 2)
+                            |> addItem (mkItem "b" 4 0 4 2)
+                in
+                Expect.equal 2 (List.length grid.items)
+        ]
+
+
+removeItemTests : Test
+removeItemTests =
+    describe "removeItem"
+        [ test "removes existing item" <|
+            \() ->
+                let
+                    grid =
+                        empty 12
+                            |> addItem (mkItem "a" 0 0 4 2)
+                            |> removeItem "a"
+                in
+                Expect.equal [] grid.items
+        , test "removing non-existent item is no-op" <|
+            \() ->
+                let
+                    grid =
+                        empty 12
+                            |> addItem (mkItem "a" 0 0 4 2)
+                            |> removeItem "b"
+                in
+                Expect.equal 1 (List.length grid.items)
+        ]
+
+
+moveItemTests : Test
+moveItemTests =
+    describe "moveItem"
+        [ test "moves item to new position" <|
+            \() ->
+                let
+                    grid =
+                        empty 12
+                            |> addItem (mkItem "a" 0 0 4 2)
+                            |> moveItem "a" { col = 4, row = 1, width = 4, height = 2 }
+                in
+                case findItem "a" grid of
+                    Just item ->
+                        Expect.all
+                            [ \i -> Expect.equal 4 i.position.col
+                            , \i -> Expect.equal 1 i.position.row
+                            ]
+                            item
+
+                    Nothing ->
+                        Expect.fail "Expected to find item a"
+        , test "move clamps to grid bounds" <|
+            \() ->
+                let
+                    grid =
+                        empty 12
+                            |> addItem (mkItem "a" 0 0 4 2)
+                            |> moveItem "a" { col = 20, row = 0, width = 4, height = 2 }
+                in
+                case findItem "a" grid of
+                    Just item ->
+                        Expect.equal True (item.position.col + item.position.width <= 12)
+
+                    Nothing ->
+                        Expect.fail "Expected to find item a"
+        ]
+
+
+collisionTests : Test
+collisionTests =
+    describe "collision detection"
+        [ test "hasCollision detects overlapping items" <|
+            \() ->
+                let
+                    grid =
+                        fromItems 12
+                            [ mkItem "a" 0 0 4 2 ]
+
+                    candidate =
+                        mkItem "b" 2 0 4 2
+                in
+                hasCollision candidate grid
+                    |> Expect.equal True
+        , test "hasCollision returns False for non-overlapping" <|
+            \() ->
+                let
+                    grid =
+                        fromItems 12
+                            [ mkItem "a" 0 0 4 2 ]
+
+                    candidate =
+                        mkItem "b" 4 0 4 2
+                in
+                hasCollision candidate grid
+                    |> Expect.equal False
+        , test "hasCollision ignores self" <|
+            \() ->
+                let
+                    item =
+                        mkItem "a" 0 0 4 2
+
+                    grid =
+                        fromItems 12 [ item ]
+                in
+                hasCollision item grid
+                    |> Expect.equal False
+        ]
+
+
+compactTests : Test
+compactTests =
+    describe "compact"
+        [ test "CompactVertical moves items up" <|
+            \() ->
+                let
+                    grid =
+                        fromItems 12
+                            [ mkItem "a" 0 5 4 2 ]
+                            |> compact CompactVertical
+                in
+                case findItem "a" grid of
+                    Just item ->
+                        Expect.equal 0 item.position.row
+
+                    Nothing ->
+                        Expect.fail "Expected to find item a"
+        , test "CompactNone leaves items in place" <|
+            \() ->
+                let
+                    grid =
+                        fromItems 12
+                            [ mkItem "a" 0 5 4 2 ]
+                            |> compact CompactNone
+                in
+                case findItem "a" grid of
+                    Just item ->
+                        Expect.equal 5 item.position.row
+
+                    Nothing ->
+                        Expect.fail "Expected to find item a"
+        , test "CompactVertical respects static items" <|
+            \() ->
+                let
+                    grid =
+                        fromItems 12
+                            [ mkStaticItem "s" 0 0 4 2
+                            , mkItem "a" 0 5 4 2
+                            ]
+                            |> compact CompactVertical
+                in
+                case findItem "a" grid of
+                    Just item ->
+                        Expect.equal 2 item.position.row
+
+                    Nothing ->
+                        Expect.fail "Expected to find item a"
+        ]
+
+
+isOccupiedTests : Test
+isOccupiedTests =
+    describe "isOccupied"
+        [ test "returns True for occupied cell" <|
+            \() ->
+                let
+                    grid =
+                        fromItems 12 [ mkItem "a" 0 0 4 2 ]
+                in
+                isOccupied 2 1 grid
+                    |> Expect.equal True
+        , test "returns False for empty cell" <|
+            \() ->
+                let
+                    grid =
+                        fromItems 12 [ mkItem "a" 0 0 4 2 ]
+                in
+                isOccupied 5 0 grid
+                    |> Expect.equal False
+        , test "returns False for cell just outside item" <|
+            \() ->
+                let
+                    grid =
+                        fromItems 12 [ mkItem "a" 0 0 4 2 ]
+                in
+                isOccupied 4 0 grid
+                    |> Expect.equal False
+        ]
+
+
+findItemTests : Test
+findItemTests =
+    describe "findItem"
+        [ test "finds existing item" <|
+            \() ->
+                let
+                    grid =
+                        fromItems 12 [ mkItem "a" 0 0 4 2 ]
+                in
+                case findItem "a" grid of
+                    Just item ->
+                        Expect.equal "a" item.id
+
+                    Nothing ->
+                        Expect.fail "Expected to find item"
+        , test "returns Nothing for missing item" <|
+            \() ->
+                let
+                    grid =
+                        fromItems 12 [ mkItem "a" 0 0 4 2 ]
+                in
+                findItem "z" grid
+                    |> Expect.equal Nothing
+        ]
+
+
+itemPositionTests : Test
+itemPositionTests =
+    describe "itemPosition"
+        [ test "converts grid position to pixel coordinates" <|
+            \() ->
+                let
+                    config =
+                        { columns = 12
+                        , rowHeight = 60
+                        , gap = 0
+                        , containerWidth = 1200
+                        , compaction = CompactVertical
+                        , preventCollision = True
+                        }
+
+                    pos =
+                        { col = 0, row = 0, width = 1, height = 1 }
+
+                    result =
+                        itemPosition config pos
+                in
+                Expect.all
+                    [ \r -> Expect.equal 0 r.x
+                    , \r -> Expect.equal 0 r.y
+                    , \r -> Expect.equal 60 r.height
+                    ]
+                    result
+        , test "row offset produces y offset" <|
+            \() ->
+                let
+                    config =
+                        { columns = 12
+                        , rowHeight = 60
+                        , gap = 0
+                        , containerWidth = 1200
+                        , compaction = CompactVertical
+                        , preventCollision = True
+                        }
+
+                    pos =
+                        { col = 0, row = 2, width = 1, height = 1 }
+
+                    result =
+                        itemPosition config pos
+                in
+                Expect.equal 120 result.y
+        ]
+
+
+gridWidthTests : Test
+gridWidthTests =
+    describe "gridWidth"
+        [ test "calculates total grid width" <|
+            \() ->
+                let
+                    config =
+                        { columns = 12
+                        , rowHeight = 60
+                        , gap = 0
+                        , containerWidth = 1200
+                        , compaction = CompactVertical
+                        , preventCollision = True
+                        }
+                in
+                Expect.equal True (gridWidth config > 0)
+        ]

@@ -1,0 +1,331 @@
+module DnD.History exposing
+    ( History
+    , init
+    , push
+    , pushBatch
+    , undo
+    , redo
+    , current
+    , canUndo
+    , canRedo
+    , undoCount
+    , redoCount
+    , withMaxSize
+    , clear
+    , toList
+    )
+
+{-| Undo/Redo History for Drag Operations
+
+Provides a zipper-based history structure that tracks past and future states,
+enabling undo and redo for drag-and-drop operations. The zipper pattern keeps
+the current state (present) flanked by a stack of past states and a stack of
+future states, giving O(1) undo and redo.
+
+When a new state is pushed, the future is discarded — branching timelines are
+not supported, matching the standard undo/redo contract users expect.
+
+An optional maximum size prevents unbounded memory growth by dropping the
+oldest past entries when the limit is exceeded.
+
+# History
+@docs History, init, push, pushBatch
+
+# Navigation
+@docs undo, redo, current
+
+# Queries
+@docs canUndo, canRedo, undoCount, redoCount
+
+# Configuration
+@docs withMaxSize, clear, toList
+
+-}
+
+
+{-| An opaque history structure using the zipper pattern.
+
+Internally, the history stores:
+
+  - **past**: a list of previous states, newest first
+  - **present**: the current state
+  - **future**: a list of upcoming states (populated by undo), nearest first
+  - **maxSize**: an optional cap on the number of past entries retained
+
+-}
+type History a
+    = History
+        { past : List a
+        , present : a
+        , future : List a
+        , maxSize : Maybe Int
+        }
+
+
+{-| Create a new history with the given initial state.
+
+The history starts with no past, no future, and no maximum size limit.
+
+    history = DnD.History.init myModel
+
+-}
+init : a -> History a
+init value =
+    History
+        { past = []
+        , present = value
+        , future = []
+        , maxSize = Nothing
+        }
+
+
+{-| Push a new state onto the history, making it the present.
+
+The current present moves into the past, and the future is cleared because
+a new action invalidates any previously undone states. If a maximum size is
+set, the oldest past entries are dropped to stay within the limit.
+
+    history
+        |> DnD.History.push newState
+
+-}
+push : a -> History a -> History a
+push value (History h) =
+    History
+        { past = trimPast h.maxSize (h.present :: h.past)
+        , present = value
+        , future = []
+        , maxSize = h.maxSize
+        }
+
+
+{-| Push multiple states onto the history in order.
+
+Each state in the list is pushed sequentially, so the last element becomes
+the new present. This is useful for batching several related changes (e.g.,
+a multi-item reorder) into discrete undo steps without requiring the caller
+to fold manually.
+
+If the list is empty, the history is unchanged.
+
+    history
+        |> DnD.History.pushBatch [ stateA, stateB, stateC ]
+        -- stateC is now the present
+
+-}
+pushBatch : List a -> History a -> History a
+pushBatch values history =
+    List.foldl push history values
+
+
+{-| Move one step back in history.
+
+The current present is placed onto the future stack, and the most recent
+past entry becomes the new present. If there is no past, this is a no-op.
+
+    history
+        |> DnD.History.undo
+
+-}
+undo : History a -> History a
+undo (History h) =
+    undoHelp h.past h.present h.future h.maxSize
+
+
+{-| Move one step forward in history.
+
+The current present is placed onto the past stack, and the nearest future
+entry becomes the new present. If there is no future, this is a no-op.
+
+    history
+        |> DnD.History.redo
+
+-}
+redo : History a -> History a
+redo (History h) =
+    redoHelp h.past h.present h.future h.maxSize
+
+
+{-| Get the current (present) state from the history.
+
+    DnD.History.current history
+    -- Returns the present value
+
+-}
+current : History a -> a
+current (History h) =
+    h.present
+
+
+{-| Check whether an undo operation is possible.
+
+Returns `True` when the past is non-empty.
+
+    DnD.History.canUndo history
+
+-}
+canUndo : History a -> Bool
+canUndo (History h) =
+    not (List.isEmpty h.past)
+
+
+{-| Check whether a redo operation is possible.
+
+Returns `True` when the future is non-empty.
+
+    DnD.History.canRedo history
+
+-}
+canRedo : History a -> Bool
+canRedo (History h) =
+    not (List.isEmpty h.future)
+
+
+{-| Get the number of undo steps available.
+
+    DnD.History.undoCount history
+    -- e.g., 3
+
+-}
+undoCount : History a -> Int
+undoCount (History h) =
+    List.length h.past
+
+
+{-| Get the number of redo steps available.
+
+    DnD.History.redoCount history
+    -- e.g., 1
+
+-}
+redoCount : History a -> Int
+redoCount (History h) =
+    List.length h.future
+
+
+{-| Set a maximum number of past entries the history will retain.
+
+If the current past already exceeds the new limit, the oldest entries are
+dropped immediately. The size must be at least 1; values less than 1 are
+clamped to 1.
+
+    history
+        |> DnD.History.withMaxSize 50
+
+-}
+withMaxSize : Int -> History a -> History a
+withMaxSize size (History h) =
+    let
+        clampedSize =
+            max 1 size
+    in
+    History
+        { past = trimPast (Just clampedSize) h.past
+        , present = h.present
+        , future = h.future
+        , maxSize = Just clampedSize
+        }
+
+
+{-| Clear all history, keeping only the current present state.
+
+The past and future are discarded. The maximum size setting is preserved.
+
+    history
+        |> DnD.History.clear
+
+-}
+clear : History a -> History a
+clear (History h) =
+    History
+        { past = []
+        , present = h.present
+        , future = []
+        , maxSize = h.maxSize
+        }
+
+
+{-| Return all states from oldest to newest.
+
+The result is the reversed past, followed by the present, followed by the
+future. This gives a complete chronological view of every state in the
+history.
+
+    DnD.History.toList history
+    -- [ oldest, ..., present, ..., newest-future ]
+
+-}
+toList : History a -> List a
+toList (History h) =
+    List.reverse h.past ++ [ h.present ] ++ h.future
+
+
+
+-- INTERNAL HELPERS
+
+
+{-| Handle the undo operation by pattern-matching the past list.
+
+When the past is empty, the history is returned unchanged. Otherwise the
+most recent past entry becomes the present and the old present moves to the
+future.
+-}
+undoHelp : List a -> a -> List a -> Maybe Int -> History a
+undoHelp past present future maxSize =
+    case past of
+        [] ->
+            History
+                { past = past
+                , present = present
+                , future = future
+                , maxSize = maxSize
+                }
+
+        previous :: olderPast ->
+            History
+                { past = olderPast
+                , present = previous
+                , future = present :: future
+                , maxSize = maxSize
+                }
+
+
+{-| Handle the redo operation by pattern-matching the future list.
+
+When the future is empty, the history is returned unchanged. Otherwise the
+nearest future entry becomes the present and the old present moves to the
+past.
+-}
+redoHelp : List a -> a -> List a -> Maybe Int -> History a
+redoHelp past present future maxSize =
+    case future of
+        [] ->
+            History
+                { past = past
+                , present = present
+                , future = future
+                , maxSize = maxSize
+                }
+
+        next :: laterFuture ->
+            History
+                { past = present :: past
+                , present = next
+                , future = laterFuture
+                , maxSize = maxSize
+                }
+
+
+{-| Trim a past list to respect the optional maximum size.
+
+When no limit is set, the list is returned unchanged. When a limit is set,
+only the first `n` elements (the newest) are kept, dropping the oldest tail.
+-}
+trimPast : Maybe Int -> List a -> List a
+trimPast maxSize past =
+    case maxSize of
+        Nothing ->
+            past
+
+        Just n ->
+            List.take n past

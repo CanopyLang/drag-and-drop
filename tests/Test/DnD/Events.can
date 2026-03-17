@@ -1,0 +1,304 @@
+module Test.DnD.Events exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD exposing (..)
+import DnD.Events exposing (..)
+import Html exposing (Attribute)
+import Json.Decode as D
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+type TestMsg
+    = DndMsg (DnD.Msg String)
+
+
+dummyRect : Rect
+dummyRect =
+    { x = 100, y = 200, width = 50, height = 50 }
+
+
+toDragItem : String -> DragItem String
+toDragItem id =
+    { id = id, rect = dummyRect, itemType = "card" }
+
+
+tests : Test
+tests =
+    describe "DnD.Events"
+        [ pointerDecoderTests
+        , modifierKeysDecoderTests
+        , preventDefaultOnDragTests
+        , eventConstructionTests
+        ]
+
+
+pointerDecoderTests : Test
+pointerDecoderTests =
+    describe "pointerDecoder"
+        [ test "decodes clientX and clientY from JSON" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString pointerDecoder "{\"clientX\": 42.5, \"clientY\": 99.1}"
+                in
+                case json of
+                    Ok point ->
+                        Expect.equal { x = 42.5, y = 99.1 } point
+
+                    Err _ ->
+                        Expect.fail "Expected successful decode"
+        , test "decodes zero coordinates" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString pointerDecoder "{\"clientX\": 0.0, \"clientY\": 0.0}"
+                in
+                case json of
+                    Ok point ->
+                        Expect.equal { x = 0.0, y = 0.0 } point
+
+                    Err _ ->
+                        Expect.fail "Expected successful decode"
+        , test "decodes negative coordinates" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString pointerDecoder "{\"clientX\": -10.0, \"clientY\": -20.0}"
+                in
+                case json of
+                    Ok point ->
+                        Expect.equal { x = -10.0, y = -20.0 } point
+
+                    Err _ ->
+                        Expect.fail "Expected successful decode"
+        , test "decodes large coordinates" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString pointerDecoder "{\"clientX\": 1920.0, \"clientY\": 1080.0}"
+                in
+                case json of
+                    Ok point ->
+                        Expect.equal { x = 1920.0, y = 1080.0 } point
+
+                    Err _ ->
+                        Expect.fail "Expected successful decode"
+        , test "decodes integer coordinates as floats" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString pointerDecoder "{\"clientX\": 100, \"clientY\": 200}"
+                in
+                case json of
+                    Ok point ->
+                        Expect.equal { x = 100, y = 200 } point
+
+                    Err _ ->
+                        Expect.fail "Expected successful decode"
+        , test "fails on missing clientX" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString pointerDecoder "{\"clientY\": 10.0}"
+                in
+                case json of
+                    Ok _ ->
+                        Expect.fail "Expected decode failure"
+
+                    Err _ ->
+                        Expect.pass
+        , test "fails on missing clientY" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString pointerDecoder "{\"clientX\": 10.0}"
+                in
+                case json of
+                    Ok _ ->
+                        Expect.fail "Expected decode failure"
+
+                    Err _ ->
+                        Expect.pass
+        , test "fails on empty object" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString pointerDecoder "{}"
+                in
+                case json of
+                    Ok _ ->
+                        Expect.fail "Expected decode failure"
+
+                    Err _ ->
+                        Expect.pass
+        , test "fails on non-object input" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString pointerDecoder "\"hello\""
+                in
+                case json of
+                    Ok _ ->
+                        Expect.fail "Expected decode failure"
+
+                    Err _ ->
+                        Expect.pass
+        ]
+
+
+modifierKeysDecoderTests : Test
+modifierKeysDecoderTests =
+    describe "modifierKeysDecoder"
+        [ test "decodes all false" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString modifierKeysDecoder
+                            "{\"ctrlKey\": false, \"altKey\": false, \"metaKey\": false}"
+                in
+                case json of
+                    Ok keys ->
+                        Expect.equal { ctrlKey = False, altKey = False, metaKey = False } keys
+
+                    Err _ ->
+                        Expect.fail "Expected successful decode"
+        , test "decodes all true" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString modifierKeysDecoder
+                            "{\"ctrlKey\": true, \"altKey\": true, \"metaKey\": true}"
+                in
+                case json of
+                    Ok keys ->
+                        Expect.equal { ctrlKey = True, altKey = True, metaKey = True } keys
+
+                    Err _ ->
+                        Expect.fail "Expected successful decode"
+        , test "decodes mixed modifier state (ctrl and meta)" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString modifierKeysDecoder
+                            "{\"ctrlKey\": true, \"altKey\": false, \"metaKey\": true}"
+                in
+                case json of
+                    Ok keys ->
+                        Expect.equal { ctrlKey = True, altKey = False, metaKey = True } keys
+
+                    Err _ ->
+                        Expect.fail "Expected successful decode"
+        , test "decodes only alt key true" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString modifierKeysDecoder
+                            "{\"ctrlKey\": false, \"altKey\": true, \"metaKey\": false}"
+                in
+                case json of
+                    Ok keys ->
+                        Expect.equal { ctrlKey = False, altKey = True, metaKey = False } keys
+
+                    Err _ ->
+                        Expect.fail "Expected successful decode"
+        , test "fails on missing ctrlKey" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString modifierKeysDecoder
+                            "{\"altKey\": false, \"metaKey\": false}"
+                in
+                case json of
+                    Ok _ ->
+                        Expect.fail "Expected decode failure"
+
+                    Err _ ->
+                        Expect.pass
+        , test "fails on missing altKey" <|
+            \() ->
+                let
+                    json =
+                        D.decodeString modifierKeysDecoder
+                            "{\"ctrlKey\": false, \"metaKey\": false}"
+                in
+                case json of
+                    Ok _ ->
+                        Expect.fail "Expected decode failure"
+
+                    Err _ ->
+                        Expect.pass
+        ]
+
+
+preventDefaultOnDragTests : Test
+preventDefaultOnDragTests =
+    describe "preventDefaultOnDrag"
+        [ test "returns an attribute without error" <|
+            \() ->
+                let
+                    _ =
+                        preventDefaultOnDrag
+                in
+                Expect.pass
+        ]
+
+
+eventConstructionTests : Test
+eventConstructionTests =
+    describe "event attribute construction"
+        [ test "onPointerDown constructs without error" <|
+            \() ->
+                let
+                    _ : Attribute TestMsg
+                    _ =
+                        onPointerDown DndMsg toDragItem "card-1"
+                in
+                Expect.pass
+        , test "onPointerDown with different id" <|
+            \() ->
+                let
+                    _ : Attribute TestMsg
+                    _ =
+                        onPointerDown DndMsg toDragItem "item-xyz"
+                in
+                Expect.pass
+        , test "onPointerMove constructs without error" <|
+            \() ->
+                let
+                    _ : Attribute TestMsg
+                    _ =
+                        onPointerMove DndMsg
+                in
+                Expect.pass
+        , test "onPointerUp constructs without error" <|
+            \() ->
+                let
+                    _ : Attribute TestMsg
+                    _ =
+                        onPointerUp DndMsg
+                in
+                Expect.pass
+        , test "onKeyboardDrag constructs without error" <|
+            \() ->
+                let
+                    _ : Attribute TestMsg
+                    _ =
+                        onKeyboardDrag DndMsg
+                in
+                Expect.pass
+        , test "onTouchStart constructs without error" <|
+            \() ->
+                let
+                    _ : Attribute TestMsg
+                    _ =
+                        onTouchStart DndMsg toDragItem "card-2"
+                in
+                Expect.pass
+        ]

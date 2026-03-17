@@ -1,0 +1,109 @@
+module Test.DnD.AutoScroll exposing (main, tests)
+
+import Basics exposing (..)
+import DnD.AutoScroll exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+tests : Test
+tests =
+    describe "DnD.AutoScroll"
+        [ defaultsTests
+        , disabledTests
+        , scrollAmountTests
+        ]
+
+
+defaultsTests : Test
+defaultsTests =
+    describe "defaults"
+        [ test "enabled is True" <|
+            \() ->
+                defaults.enabled
+                    |> Expect.equal True
+        , test "threshold is 50" <|
+            \() ->
+                defaults.threshold
+                    |> Expect.within (Expect.Absolute 0.001) 50.0
+        , test "speed is 10" <|
+            \() ->
+                defaults.speed
+                    |> Expect.within (Expect.Absolute 0.001) 10.0
+        , test "acceleration is 2" <|
+            \() ->
+                defaults.acceleration
+                    |> Expect.within (Expect.Absolute 0.001) 2.0
+        ]
+
+
+disabledTests : Test
+disabledTests =
+    describe "disabled"
+        [ test "enabled is False" <|
+            \() ->
+                disabled.enabled
+                    |> Expect.equal False
+        , test "threshold is 0" <|
+            \() ->
+                disabled.threshold
+                    |> Expect.within (Expect.Absolute 0.001) 0.0
+        ]
+
+
+scrollAmountTests : Test
+scrollAmountTests =
+    describe "scrollAmount"
+        [ test "returns 0 when disabled" <|
+            \() ->
+                scrollAmount disabled 25.0
+                    |> Expect.within (Expect.Absolute 0.001) 0.0
+        , test "returns 0 when outside threshold" <|
+            \() ->
+                scrollAmount defaults 100.0
+                    |> Expect.within (Expect.Absolute 0.001) 0.0
+        , test "returns 0 at threshold boundary" <|
+            \() ->
+                scrollAmount defaults 50.0
+                    |> Expect.within (Expect.Absolute 0.001) 0.0
+        , test "returns 0 for negative distance" <|
+            \() ->
+                scrollAmount defaults (-5.0)
+                    |> Expect.within (Expect.Absolute 0.001) 0.0
+        , test "returns 0 for zero distance" <|
+            \() ->
+                scrollAmount defaults 0.0
+                    |> Expect.within (Expect.Absolute 0.001) 0.0
+        , test "returns positive amount inside threshold" <|
+            \() ->
+                let
+                    result =
+                        scrollAmount defaults 25.0
+                in
+                Expect.greaterThan 0.0 result
+        , test "closer to edge gives more scroll" <|
+            \() ->
+                let
+                    closeResult =
+                        scrollAmount defaults 10.0
+
+                    farResult =
+                        scrollAmount defaults 40.0
+                in
+                Expect.greaterThan farResult closeResult
+        , test "at edge calculates correct amount" <|
+            \() ->
+                let
+                    config =
+                        { enabled = True, threshold = 100, speed = 10, acceleration = 1 }
+
+                    result =
+                        scrollAmount config 50.0
+                in
+                Expect.within (Expect.Absolute 0.001) 5.0 result
+        ]

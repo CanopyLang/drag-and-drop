@@ -1,0 +1,339 @@
+module Test.DnD.Flip exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD.Flip exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+dummyRect : Rect
+dummyRect =
+    { x = 100, y = 200, width = 50, height = 50 }
+
+
+tests : Test
+tests =
+    describe "DnD.Flip"
+        [ emptyStateTests
+        , captureFirstTests
+        , computeFlipTests
+        , flipStylesTests
+        , lookupDeltaTests
+        , applyFlipTransformTests
+        ]
+
+
+emptyStateTests : Test
+emptyStateTests =
+    describe "emptyState"
+        [ test "has no rects" <|
+            \() ->
+                emptyState
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "is an empty list" <|
+            \() ->
+                Expect.equal 0 (List.length emptyState)
+        ]
+
+
+captureFirstTests : Test
+captureFirstTests =
+    describe "captureFirst"
+        [ test "stores provided rects" <|
+            \() ->
+                let
+                    rects =
+                        [ { id = "a", rect = dummyRect }
+                        , { id = "b", rect = { x = 200, y = 300, width = 60, height = 40 } }
+                        ]
+
+                    state =
+                        captureFirst rects
+                in
+                List.length state
+                    |> Expect.equal 2
+        , test "stores empty list" <|
+            \() ->
+                captureFirst []
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "preserves rect data" <|
+            \() ->
+                let
+                    state =
+                        captureFirst [ { id = "a", rect = dummyRect } ]
+                in
+                case state of
+                    [ first ] ->
+                        Expect.equal "a" first.id
+
+                    _ ->
+                        Expect.fail "Expected single element"
+        , test "preserves rect coordinates" <|
+            \() ->
+                let
+                    state =
+                        captureFirst [ { id = "a", rect = dummyRect } ]
+                in
+                case state of
+                    [ first ] ->
+                        Expect.equal dummyRect first.rect
+
+                    _ ->
+                        Expect.fail "Expected single element"
+        ]
+
+
+computeFlipTests : Test
+computeFlipTests =
+    describe "computeFlip"
+        [ test "computes positive dx when element moved left" <|
+            \() ->
+                let
+                    first =
+                        captureFirst [ { id = "a", rect = { x = 200, y = 100, width = 50, height = 50 } } ]
+
+                    last =
+                        [ { id = "a", rect = { x = 100, y = 100, width = 50, height = 50 } } ]
+
+                    deltas =
+                        computeFlip first last
+                in
+                case deltas of
+                    [ d ] ->
+                        Expect.equal 100 d.dx
+
+                    _ ->
+                        Expect.fail "Expected one delta"
+        , test "computes negative dx when element moved right" <|
+            \() ->
+                let
+                    first =
+                        captureFirst [ { id = "a", rect = { x = 100, y = 100, width = 50, height = 50 } } ]
+
+                    last =
+                        [ { id = "a", rect = { x = 200, y = 100, width = 50, height = 50 } } ]
+
+                    deltas =
+                        computeFlip first last
+                in
+                case deltas of
+                    [ d ] ->
+                        Expect.equal -100 d.dx
+
+                    _ ->
+                        Expect.fail "Expected one delta"
+        , test "computes dy when element moved vertically" <|
+            \() ->
+                let
+                    first =
+                        captureFirst [ { id = "a", rect = { x = 0, y = 50, width = 50, height = 50 } } ]
+
+                    last =
+                        [ { id = "a", rect = { x = 0, y = 150, width = 50, height = 50 } } ]
+
+                    deltas =
+                        computeFlip first last
+                in
+                case deltas of
+                    [ d ] ->
+                        Expect.equal -100 d.dy
+
+                    _ ->
+                        Expect.fail "Expected one delta"
+        , test "returns empty for no matching IDs" <|
+            \() ->
+                let
+                    first =
+                        captureFirst [ { id = "a", rect = dummyRect } ]
+
+                    last =
+                        [ { id = "b", rect = dummyRect } ]
+                in
+                computeFlip first last
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "returns empty when first state is empty" <|
+            \() ->
+                computeFlip emptyState [ { id = "a", rect = dummyRect } ]
+                    |> List.isEmpty
+                    |> Expect.equal True
+        , test "returns zero deltas for unmoved elements" <|
+            \() ->
+                let
+                    first =
+                        captureFirst [ { id = "a", rect = dummyRect } ]
+
+                    last =
+                        [ { id = "a", rect = dummyRect } ]
+
+                    deltas =
+                        computeFlip first last
+                in
+                case deltas of
+                    [ d ] ->
+                        Expect.equal { id = "a", dx = 0, dy = 0 } d
+
+                    _ ->
+                        Expect.fail "Expected one delta"
+        , test "handles multiple elements" <|
+            \() ->
+                let
+                    first =
+                        captureFirst
+                            [ { id = "a", rect = { x = 0, y = 0, width = 50, height = 50 } }
+                            , { id = "b", rect = { x = 60, y = 0, width = 50, height = 50 } }
+                            ]
+
+                    last =
+                        [ { id = "a", rect = { x = 60, y = 0, width = 50, height = 50 } }
+                        , { id = "b", rect = { x = 0, y = 0, width = 50, height = 50 } }
+                        ]
+
+                    deltas =
+                        computeFlip first last
+                in
+                List.length deltas
+                    |> Expect.equal 2
+        , test "swapped elements have opposite dx" <|
+            \() ->
+                let
+                    first =
+                        captureFirst
+                            [ { id = "a", rect = { x = 0, y = 0, width = 50, height = 50 } }
+                            , { id = "b", rect = { x = 60, y = 0, width = 50, height = 50 } }
+                            ]
+
+                    last =
+                        [ { id = "a", rect = { x = 60, y = 0, width = 50, height = 50 } }
+                        , { id = "b", rect = { x = 0, y = 0, width = 50, height = 50 } }
+                        ]
+
+                    deltas =
+                        computeFlip first last
+                in
+                case deltas of
+                    [ da, db ] ->
+                        Expect.true "a should have dx = -60 and b should have dx = 60"
+                            (da.dx == -60 && db.dx == 60)
+
+                    _ ->
+                        Expect.fail "Expected two deltas"
+        ]
+
+
+flipStylesTests : Test
+flipStylesTests =
+    describe "flipStyles"
+        [ test "at progress 0 returns non-empty styles" <|
+            \() ->
+                flipStyles { id = "a", dx = 100, dy = 0 } 0.0
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "at progress 1 returns non-empty styles" <|
+            \() ->
+                flipStyles { id = "a", dx = 100, dy = 0 } 1.0
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 2 styles (transform + will-change)" <|
+            \() ->
+                flipStyles { id = "a", dx = 50, dy = 30 } 0.5
+                    |> List.length
+                    |> Expect.equal 2
+        , test "styles at progress 0 differ from progress 1" <|
+            \() ->
+                let
+                    s0 =
+                        flipStyles { id = "a", dx = 100, dy = 0 } 0.0
+
+                    s1 =
+                        flipStyles { id = "a", dx = 100, dy = 0 } 1.0
+                in
+                Expect.notEqual s0 s1
+        , test "intermediate progress produces intermediate styles" <|
+            \() ->
+                let
+                    delta =
+                        { id = "a", dx = 100, dy = 0 }
+
+                    s0 =
+                        flipStyles delta 0.0
+
+                    s05 =
+                        flipStyles delta 0.5
+
+                    s1 =
+                        flipStyles delta 1.0
+                in
+                Expect.true "mid should differ from both extremes" (s05 /= s0 && s05 /= s1)
+        ]
+
+
+lookupDeltaTests : Test
+lookupDeltaTests =
+    describe "lookupDelta"
+        [ test "finds existing delta" <|
+            \() ->
+                let
+                    deltas =
+                        [ { id = "a", dx = 10, dy = 20 }
+                        , { id = "b", dx = 30, dy = 40 }
+                        ]
+                in
+                case lookupDelta "b" deltas of
+                    Just d ->
+                        Expect.equal 30 d.dx
+
+                    Nothing ->
+                        Expect.fail "Expected to find delta"
+        , test "returns Nothing for missing id" <|
+            \() ->
+                lookupDelta "z" [ { id = "a", dx = 10, dy = 20 } ]
+                    |> Expect.equal Nothing
+        , test "returns Nothing for empty list" <|
+            \() ->
+                lookupDelta "a" []
+                    |> Expect.equal Nothing
+        , test "finds first element" <|
+            \() ->
+                let
+                    deltas =
+                        [ { id = "first", dx = 1, dy = 2 }
+                        , { id = "second", dx = 3, dy = 4 }
+                        ]
+                in
+                case lookupDelta "first" deltas of
+                    Just d ->
+                        Expect.equal { id = "first", dx = 1, dy = 2 } d
+
+                    Nothing ->
+                        Expect.fail "Expected to find delta"
+        ]
+
+
+applyFlipTransformTests : Test
+applyFlipTransformTests =
+    describe "applyFlipTransform"
+        [ test "returns non-empty styles" <|
+            \() ->
+                applyFlipTransform { id = "a", dx = 100, dy = 0 } 300
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 3 styles (transform + transition + will-change)" <|
+            \() ->
+                applyFlipTransform { id = "a", dx = 50, dy = 30 } 200
+                    |> List.length
+                    |> Expect.equal 3
+        , test "different durations produce different styles" <|
+            \() ->
+                Expect.notEqual
+                    (applyFlipTransform { id = "a", dx = 50, dy = 0 } 200)
+                    (applyFlipTransform { id = "a", dx = 50, dy = 0 } 500)
+        ]

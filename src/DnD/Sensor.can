@@ -1,0 +1,173 @@
+module DnD.Sensor exposing
+    ( Sensor(..)
+    , PointerConfig
+    , TouchConfig
+    , KeyboardConfig
+    , pointer
+    , touch
+    , keyboard
+    , defaults
+    , defaultPointerConfig
+    , defaultTouchConfig
+    , defaultKeyboardConfig
+    )
+
+
+{-| Input sensors translate user interactions into drag operations.
+
+The pointer sensor handles mouse and pen input via pointer events.
+The touch sensor handles touch input with specific activation thresholds
+and delay to distinguish taps from drags.
+The keyboard sensor enables accessible drag-and-drop via arrow keys and
+space/enter to pick up and drop items.
+
+@docs Sensor, PointerConfig, TouchConfig, KeyboardConfig
+
+@docs pointer, touch, keyboard, defaults
+
+@docs defaultPointerConfig, defaultTouchConfig, defaultKeyboardConfig
+
+-}
+
+
+{-| A sensor that detects user input and translates it to drag operations.
+
+  - `Pointer`: Uses pointer events (mouse, pen) with configurable
+    activation distance and delay.
+  - `Touch`: Touch-specific sensor with higher activation distance and
+    delay to prevent accidental drags while scrolling.
+  - `Keyboard`: Uses arrow keys for movement and space/enter for pick-up/drop,
+    with configurable scroll speed and move step size.
+-}
+type Sensor id
+    = Pointer PointerConfig
+    | Touch TouchConfig
+    | Keyboard KeyboardConfig
+
+
+{-| Configuration for the pointer sensor (mouse and pen).
+
+  - `activationDistance`: Number of pixels the pointer must move before
+    a drag operation starts. Prevents accidental drags from clicks.
+  - `activationDelay`: Milliseconds to hold the pointer down before
+    a drag starts.
+-}
+type alias PointerConfig =
+    { activationDistance : Float
+    , activationDelay : Int
+    }
+
+
+{-| Configuration for the touch sensor.
+
+  - `activationDistance`: Number of pixels the touch must move before
+    a drag operation starts. Higher than pointer to prevent scroll interference.
+  - `activationDelay`: Milliseconds to hold before drag starts. Allows
+    distinguishing between tap-scroll and drag gestures.
+  - `cancelOnScroll`: Whether scrolling should cancel the pending activation.
+-}
+type alias TouchConfig =
+    { activationDistance : Float
+    , activationDelay : Int
+    , cancelOnScroll : Bool
+    }
+
+
+{-| Configuration for the keyboard sensor.
+
+  - `scrollSpeed`: Number of pixels to scroll per key press when the
+    dragged item reaches the viewport edge.
+  - `moveStep`: Number of pixels to move the item per arrow key press.
+-}
+type alias KeyboardConfig =
+    { scrollSpeed : Float
+    , moveStep : Float
+    }
+
+
+{-| Create a pointer sensor with the given configuration.
+
+    mySensor = DnD.Sensor.pointer
+        { activationDistance = 5.0
+        , activationDelay = 0
+        }
+-}
+pointer : PointerConfig -> Sensor id
+pointer config =
+    Pointer config
+
+
+{-| Create a touch sensor with the given configuration.
+
+    mySensor = DnD.Sensor.touch
+        { activationDistance = 10.0
+        , activationDelay = 250
+        , cancelOnScroll = True
+        }
+-}
+touch : TouchConfig -> Sensor id
+touch config =
+    Touch config
+
+
+{-| Create a keyboard sensor with the given configuration.
+
+    mySensor = DnD.Sensor.keyboard
+        { scrollSpeed = 20.0
+        , moveStep = 15.0
+        }
+-}
+keyboard : KeyboardConfig -> Sensor id
+keyboard config =
+    Keyboard config
+
+
+{-| Default pointer sensor configuration.
+
+5 pixels activation distance with no delay, suitable for mouse input.
+-}
+defaultPointerConfig : PointerConfig
+defaultPointerConfig =
+    { activationDistance = 5.0
+    , activationDelay = 0
+    }
+
+
+{-| Default touch sensor configuration.
+
+10 pixels activation distance with 250ms delay, suitable for touch screens.
+Higher thresholds prevent interference with scroll gestures.
+-}
+defaultTouchConfig : TouchConfig
+defaultTouchConfig =
+    { activationDistance = 10.0
+    , activationDelay = 250
+    , cancelOnScroll = True
+    }
+
+
+{-| Default keyboard sensor configuration.
+
+Scrolls at 10 pixels per key press and moves 10 pixels per step.
+-}
+defaultKeyboardConfig : KeyboardConfig
+defaultKeyboardConfig =
+    { scrollSpeed = 10.0
+    , moveStep = 10.0
+    }
+
+
+{-| Default sensors: a pointer sensor, touch sensor, and keyboard sensor
+with default settings.
+
+    config =
+        { sensors = DnD.Sensor.defaults
+        , ...
+        }
+-}
+defaults : List (Sensor id)
+defaults =
+    [ Pointer defaultPointerConfig
+    , Touch defaultTouchConfig
+    , Keyboard defaultKeyboardConfig
+    ]

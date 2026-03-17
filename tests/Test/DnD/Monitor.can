@@ -1,0 +1,183 @@
+module Test.DnD.Monitor exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD exposing (DragItem, DropTarget)
+import DnD.Monitor exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+sampleRect : { x : Float, y : Float, width : Float, height : Float }
+sampleRect =
+    { x = 10, y = 20, width = 100, height = 50 }
+
+
+sampleItem : DragItem String
+sampleItem =
+    { id = "item-a", rect = sampleRect, itemType = "card" }
+
+
+sampleDelta : { x : Float, y : Float }
+sampleDelta =
+    { x = 15, y = 25 }
+
+
+sampleTarget : DropTarget String
+sampleTarget =
+    { id = "target-1", rect = { x = 200, y = 200, width = 80, height = 80 }, accept = Nothing }
+
+
+type TestMsg
+    = Started String
+    | Moved String Float Float
+    | Overed String String
+    | Ended String (Maybe String)
+    | Cancelled String
+
+
+tests : Test
+tests =
+    describe "DnD.Monitor"
+        [ monitorCreationTests
+        , callbackRegistrationTests
+        , processEventTests
+        ]
+
+
+monitorCreationTests : Test
+monitorCreationTests =
+    describe "monitor creation"
+        [ test "monitor creates with all callbacks as Nothing" <|
+            \() ->
+                let
+                    mon =
+                        monitor
+                in
+                Expect.equal Nothing mon.onStart
+        , test "monitor onMove is Nothing" <|
+            \() ->
+                Expect.equal Nothing monitor.onMove
+        , test "monitor onOver is Nothing" <|
+            \() ->
+                Expect.equal Nothing monitor.onOver
+        , test "monitor onEnd is Nothing" <|
+            \() ->
+                Expect.equal Nothing monitor.onEnd
+        , test "monitor onCancel is Nothing" <|
+            \() ->
+                Expect.equal Nothing monitor.onCancel
+        ]
+
+
+callbackRegistrationTests : Test
+callbackRegistrationTests =
+    describe "callback registration"
+        [ test "onDragStart sets the onStart callback" <|
+            \() ->
+                let
+                    mon =
+                        monitor
+                            |> onDragStart (\item -> Started item.id)
+                in
+                case mon.onStart of
+                    Just _ ->
+                        Expect.pass
+
+                    Nothing ->
+                        Expect.fail "Expected onStart to be Just"
+        , test "onDragEnd sets the onEnd callback" <|
+            \() ->
+                let
+                    mon =
+                        monitor
+                            |> onDragEnd (\_ _ -> Ended "x" Nothing)
+                in
+                case mon.onEnd of
+                    Just _ ->
+                        Expect.pass
+
+                    Nothing ->
+                        Expect.fail "Expected onEnd to be Just"
+        ]
+
+
+processEventTests : Test
+processEventTests =
+    describe "processEvent"
+        [ test "DragStarted fires onStart callback" <|
+            \() ->
+                let
+                    mon =
+                        monitor
+                            |> onDragStart (\item -> Started item.id)
+                in
+                processEvent mon (DragStarted sampleItem)
+                    |> Expect.equal [ Started "item-a" ]
+        , test "DragStarted returns empty when no callback" <|
+            \() ->
+                processEvent monitor (DragStarted sampleItem)
+                    |> Expect.equal []
+        , test "DragMoved fires onMove callback" <|
+            \() ->
+                let
+                    mon =
+                        monitor
+                            |> onDragMove (\item delta -> Moved item.id delta.x delta.y)
+                in
+                processEvent mon (DragMoved sampleItem sampleDelta)
+                    |> Expect.equal [ Moved "item-a" 15 25 ]
+        , test "DragMoved returns empty when no callback" <|
+            \() ->
+                processEvent monitor (DragMoved sampleItem sampleDelta)
+                    |> Expect.equal []
+        , test "DragOvered fires onOver callback" <|
+            \() ->
+                let
+                    mon =
+                        monitor
+                            |> onDragOver (\item target -> Overed item.id target.id)
+                in
+                processEvent mon (DragOvered sampleItem sampleTarget)
+                    |> Expect.equal [ Overed "item-a" "target-1" ]
+        , test "DragEnded fires onEnd callback with Just target" <|
+            \() ->
+                let
+                    mon =
+                        monitor
+                            |> onDragEnd (\item maybeTarget ->
+                                Ended item.id (Maybe.map .id maybeTarget)
+                            )
+                in
+                processEvent mon (DragEnded sampleItem (Just sampleTarget))
+                    |> Expect.equal [ Ended "item-a" (Just "target-1") ]
+        , test "DragEnded fires onEnd callback with Nothing target" <|
+            \() ->
+                let
+                    mon =
+                        monitor
+                            |> onDragEnd (\item maybeTarget ->
+                                Ended item.id (Maybe.map .id maybeTarget)
+                            )
+                in
+                processEvent mon (DragEnded sampleItem Nothing)
+                    |> Expect.equal [ Ended "item-a" Nothing ]
+        , test "DragCancelled fires onCancel callback" <|
+            \() ->
+                let
+                    mon =
+                        monitor
+                            |> onDragCancel (\item -> Cancelled item.id)
+                in
+                processEvent mon (DragCancelled sampleItem)
+                    |> Expect.equal [ Cancelled "item-a" ]
+        , test "DragCancelled returns empty when no callback" <|
+            \() ->
+                processEvent monitor (DragCancelled sampleItem)
+                    |> Expect.equal []
+        ]

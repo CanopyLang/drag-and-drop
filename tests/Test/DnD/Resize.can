@@ -1,0 +1,341 @@
+module Test.DnD.Resize exposing (main, tests)
+
+import Basics exposing (..)
+import Maybe exposing (..)
+import DnD.Resize exposing (..)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+sampleRect : { x : Float, y : Float, width : Float, height : Float }
+sampleRect =
+    { x = 50, y = 50, width = 200, height = 100 }
+
+
+startPoint : { x : Float, y : Float }
+startPoint =
+    { x = 250, y = 150 }
+
+
+tests : Test
+tests =
+    describe "DnD.Resize"
+        [ initTests
+        , startResizeTests
+        , updateResizeTests
+        , endResizeTests
+        , isResizingTests
+        , handleCursorTests
+        , constraintTests
+        , aspectRatioTests
+        ]
+
+
+initTests : Test
+initTests =
+    describe "initState"
+        [ test "has no active resize" <|
+            \() ->
+                isResizing initState
+                    |> Expect.equal False
+        , test "currentRect is Nothing" <|
+            \() ->
+                currentRect initState
+                    |> Expect.equal Nothing
+        ]
+
+
+startResizeTests : Test
+startResizeTests =
+    describe "startResize"
+        [ test "activates resize" <|
+            \() ->
+                let
+                    state =
+                        startResize East sampleRect startPoint initState
+                in
+                isResizing state
+                    |> Expect.equal True
+        , test "currentRect returns the start rect" <|
+            \() ->
+                let
+                    state =
+                        startResize East sampleRect startPoint initState
+                in
+                currentRect state
+                    |> Expect.equal (Just sampleRect)
+        , test "startResize replaces previous active resize" <|
+            \() ->
+                let
+                    state0 =
+                        startResize East sampleRect startPoint initState
+
+                    newRect =
+                        { x = 10, y = 10, width = 300, height = 200 }
+
+                    state1 =
+                        startResize North newRect { x = 100, y = 10 } state0
+                in
+                currentRect state1
+                    |> Expect.equal (Just newRect)
+        ]
+
+
+updateResizeTests : Test
+updateResizeTests =
+    describe "updateResize"
+        [ test "dragging East increases width" <|
+            \() ->
+                let
+                    state0 =
+                        startResize East sampleRect startPoint initState
+
+                    state1 =
+                        updateResize defaultConfig { x = 300, y = 150 } state0
+                in
+                case currentRect state1 of
+                    Just rect ->
+                        Expect.equal 250 rect.width
+
+                    Nothing ->
+                        Expect.fail "Expected active resize"
+        , test "dragging South increases height" <|
+            \() ->
+                let
+                    state0 =
+                        startResize South sampleRect { x = 150, y = 150 } initState
+
+                    state1 =
+                        updateResize defaultConfig { x = 150, y = 200 } state0
+                in
+                case currentRect state1 of
+                    Just rect ->
+                        Expect.equal 150 rect.height
+
+                    Nothing ->
+                        Expect.fail "Expected active resize"
+        , test "updateResize on inactive state is no-op" <|
+            \() ->
+                let
+                    state =
+                        updateResize defaultConfig { x = 300, y = 300 } initState
+                in
+                isResizing state
+                    |> Expect.equal False
+        , test "dragging North moves y and reduces height" <|
+            \() ->
+                let
+                    state0 =
+                        startResize North sampleRect { x = 150, y = 50 } initState
+
+                    state1 =
+                        updateResize defaultConfig { x = 150, y = 30 } state0
+                in
+                case currentRect state1 of
+                    Just rect ->
+                        Expect.all
+                            [ \r -> Expect.equal 30 r.y
+                            , \r -> Expect.equal 120 r.height
+                            ]
+                            rect
+
+                    Nothing ->
+                        Expect.fail "Expected active resize"
+        , test "dragging West moves x and reduces width" <|
+            \() ->
+                let
+                    state0 =
+                        startResize West sampleRect { x = 50, y = 100 } initState
+
+                    state1 =
+                        updateResize defaultConfig { x = 30, y = 100 } state0
+                in
+                case currentRect state1 of
+                    Just rect ->
+                        Expect.all
+                            [ \r -> Expect.equal 30 r.x
+                            , \r -> Expect.equal 220 r.width
+                            ]
+                            rect
+
+                    Nothing ->
+                        Expect.fail "Expected active resize"
+        ]
+
+
+endResizeTests : Test
+endResizeTests =
+    describe "endResize"
+        [ test "returns result when active" <|
+            \() ->
+                let
+                    state0 =
+                        startResize East sampleRect startPoint initState
+
+                    state1 =
+                        updateResize defaultConfig { x = 300, y = 150 } state0
+
+                    ( _, result ) =
+                        endResize state1
+                in
+                case result of
+                    Just r ->
+                        Expect.equal 50 r.widthDelta
+
+                    Nothing ->
+                        Expect.fail "Expected Just result"
+        , test "resets state after endResize" <|
+            \() ->
+                let
+                    state0 =
+                        startResize East sampleRect startPoint initState
+
+                    ( newState, _ ) =
+                        endResize state0
+                in
+                isResizing newState
+                    |> Expect.equal False
+        , test "returns Nothing when not active" <|
+            \() ->
+                let
+                    ( _, result ) =
+                        endResize initState
+                in
+                Expect.equal Nothing result
+        ]
+
+
+isResizingTests : Test
+isResizingTests =
+    describe "isResizing"
+        [ test "False for init" <|
+            \() ->
+                isResizing initState |> Expect.equal False
+        , test "True after startResize" <|
+            \() ->
+                isResizing (startResize East sampleRect startPoint initState)
+                    |> Expect.equal True
+        ]
+
+
+handleCursorTests : Test
+handleCursorTests =
+    describe "handleCursor"
+        [ test "North returns n-resize" <|
+            \() ->
+                handleCursor North |> Expect.equal "n-resize"
+        , test "South returns s-resize" <|
+            \() ->
+                handleCursor South |> Expect.equal "s-resize"
+        , test "East returns e-resize" <|
+            \() ->
+                handleCursor East |> Expect.equal "e-resize"
+        , test "West returns w-resize" <|
+            \() ->
+                handleCursor West |> Expect.equal "w-resize"
+        , test "NorthEast returns ne-resize" <|
+            \() ->
+                handleCursor NorthEast |> Expect.equal "ne-resize"
+        , test "SouthWest returns sw-resize" <|
+            \() ->
+                handleCursor SouthWest |> Expect.equal "sw-resize"
+        ]
+
+
+constraintTests : Test
+constraintTests =
+    describe "applyConstraints"
+        [ test "clamps width to minWidth" <|
+            \() ->
+                let
+                    rect =
+                        { x = 0, y = 0, width = 5, height = 50 }
+
+                    result =
+                        applyConstraints defaultConfig rect
+                in
+                Expect.equal 20 result.width
+        , test "clamps height to minHeight" <|
+            \() ->
+                let
+                    rect =
+                        { x = 0, y = 0, width = 50, height = 5 }
+
+                    result =
+                        applyConstraints defaultConfig rect
+                in
+                Expect.equal 20 result.height
+        , test "clamps to maxWidth" <|
+            \() ->
+                let
+                    config =
+                        { defaultConfig | maxWidth = Just 100 }
+
+                    rect =
+                        { x = 0, y = 0, width = 200, height = 50 }
+
+                    result =
+                        applyConstraints config rect
+                in
+                Expect.equal 100 result.width
+        , test "clamps to maxHeight" <|
+            \() ->
+                let
+                    config =
+                        { defaultConfig | maxHeight = Just 80 }
+
+                    rect =
+                        { x = 0, y = 0, width = 50, height = 200 }
+
+                    result =
+                        applyConstraints config rect
+                in
+                Expect.equal 80 result.height
+        , test "no clamping when within bounds" <|
+            \() ->
+                let
+                    rect =
+                        { x = 10, y = 20, width = 50, height = 50 }
+
+                    result =
+                        applyConstraints defaultConfig rect
+                in
+                Expect.equal rect result
+        ]
+
+
+aspectRatioTests : Test
+aspectRatioTests =
+    describe "aspect ratio lock"
+        [ test "without lock, dimensions are independent" <|
+            \() ->
+                let
+                    config =
+                        { defaultConfig | lockAspectRatio = False }
+
+                    state0 =
+                        startResize East { x = 0, y = 0, width = 200, height = 100 } { x = 200, y = 50 } initState
+
+                    state1 =
+                        updateResize config { x = 300, y = 50 } state0
+                in
+                case currentRect state1 of
+                    Just rect ->
+                        Expect.all
+                            [ \r -> Expect.equal 300 r.width
+                            , \r -> Expect.equal 100 r.height
+                            ]
+                            rect
+
+                    Nothing ->
+                        Expect.fail "Expected active resize"
+        , test "handlePositions returns 8 positions" <|
+            \() ->
+                List.length handlePositions
+                    |> Expect.equal 8
+        ]

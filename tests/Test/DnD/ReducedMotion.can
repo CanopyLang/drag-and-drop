@@ -1,0 +1,170 @@
+module Test.DnD.ReducedMotion exposing (main, tests)
+
+import Basics exposing (..)
+import DnD.ReducedMotion exposing (..)
+import Css exposing (Style(..))
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+sampleStyles : List Style
+sampleStyles =
+    [ Property "transform" "translate(10px, 20px)"
+    , Property "will-change" "transform"
+    ]
+
+
+tests : Test
+tests =
+    describe "DnD.ReducedMotion"
+        [ applyStrategyTests
+        , instantDisplacementTests
+        , fadeDropTests
+        , instantLiftTests
+        ]
+
+
+applyStrategyTests : Test
+applyStrategyTests =
+    describe "applyStrategy"
+        [ test "NoReduction returns styles unchanged" <|
+            \() ->
+                applyStrategy NoReduction sampleStyles
+                    |> Expect.equal sampleStyles
+        , test "NoReduction with empty list returns empty list" <|
+            \() ->
+                applyStrategy NoReduction []
+                    |> Expect.equal []
+        , test "NoReduction preserves style count" <|
+            \() ->
+                applyStrategy NoReduction sampleStyles
+                    |> List.length
+                    |> Expect.equal 2
+        , test "InstantPosition returns transition:none styles" <|
+            \() ->
+                applyStrategy InstantPosition sampleStyles
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "InstantPosition replaces all input styles with 1" <|
+            \() ->
+                applyStrategy InstantPosition sampleStyles
+                    |> List.length
+                    |> Expect.equal 1
+        , test "InstantPosition ignores original style content" <|
+            \() ->
+                let
+                    result1 =
+                        applyStrategy InstantPosition sampleStyles
+
+                    result2 =
+                        applyStrategy InstantPosition [ Property "color" "red" ]
+                in
+                Expect.equal result1 result2
+        , test "FadeTransition returns opacity-based styles" <|
+            \() ->
+                applyStrategy (FadeTransition 200) sampleStyles
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "FadeTransition returns 2 styles" <|
+            \() ->
+                applyStrategy (FadeTransition 150) sampleStyles
+                    |> List.length
+                    |> Expect.equal 2
+        , test "FadeTransition with different durations produce different styles" <|
+            \() ->
+                Expect.notEqual
+                    (applyStrategy (FadeTransition 100) sampleStyles)
+                    (applyStrategy (FadeTransition 500) sampleStyles)
+        , test "SlowMotion returns same number of styles" <|
+            \() ->
+                applyStrategy (SlowMotion 2.0) sampleStyles
+                    |> List.length
+                    |> Expect.equal (List.length sampleStyles)
+        , test "SlowMotion with factor 1.0 returns styles" <|
+            \() ->
+                applyStrategy (SlowMotion 1.0) sampleStyles
+                    |> List.isEmpty
+                    |> Expect.equal False
+        ]
+
+
+instantDisplacementTests : Test
+instantDisplacementTests =
+    describe "instantDisplacement"
+        [ test "returns non-empty style list" <|
+            \() ->
+                instantDisplacement
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 2 styles" <|
+            \() ->
+                instantDisplacement
+                    |> List.length
+                    |> Expect.equal 2
+        , test "contains transition:none" <|
+            \() ->
+                let
+                    hasTransitionNone =
+                        List.any (\s -> s == Property "transition" "none") instantDisplacement
+                in
+                Expect.equal True hasTransitionNone
+        , test "contains will-change:auto" <|
+            \() ->
+                let
+                    hasWillChangeAuto =
+                        List.any (\s -> s == Property "will-change" "auto") instantDisplacement
+                in
+                Expect.equal True hasWillChangeAuto
+        ]
+
+
+fadeDropTests : Test
+fadeDropTests =
+    describe "fadeDrop"
+        [ test "returns non-empty style list" <|
+            \() ->
+                fadeDrop 200
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 2 styles (opacity + transition)" <|
+            \() ->
+                fadeDrop 250
+                    |> List.length
+                    |> Expect.equal 2
+        , test "accepts zero duration" <|
+            \() ->
+                fadeDrop 0
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "different durations produce different styles" <|
+            \() ->
+                Expect.notEqual (fadeDrop 100) (fadeDrop 500)
+        ]
+
+
+instantLiftTests : Test
+instantLiftTests =
+    describe "instantLift"
+        [ test "returns non-empty style list" <|
+            \() ->
+                instantLift
+                    |> List.isEmpty
+                    |> Expect.equal False
+        , test "returns 4 styles" <|
+            \() ->
+                instantLift
+                    |> List.length
+                    |> Expect.equal 4
+        , test "contains transition:none" <|
+            \() ->
+                let
+                    hasTransitionNone =
+                        List.any (\s -> s == Property "transition" "none") instantLift
+                in
+                Expect.equal True hasTransitionNone
+        ]

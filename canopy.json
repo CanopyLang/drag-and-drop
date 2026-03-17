@@ -1,0 +1,76 @@
+{
+    "type": "package",
+    "name": "canopy/dnd",
+    "summary": "Accessible drag-and-drop with smooth animations, event bridge, and ready-to-use views",
+    "license": "BSD-3-Clause",
+    "version": "2.1.0",
+    "exposed-modules": {
+        "Core": [
+            "DnD",
+            "DnD.Draggable",
+            "DnD.Droppable",
+            "DnD.Handle",
+            "DnD.Overlay",
+            "DnD.Hitbox"
+        ],
+        "Events & Subscriptions": [
+            "DnD.Events",
+            "DnD.Subscriptions"
+        ],
+        "Motion & Animation": [
+            "DnD.Motion",
+            "DnD.Flip",
+            "DnD.ReducedMotion",
+            "DnD.Performance"
+        ],
+        "Sortable": [
+            "DnD.Sortable",
+            "DnD.Sortable.View"
+        ],
+        "Complex Patterns": [
+            "DnD.Tree",
+            "DnD.Kanban",
+            "DnD.MultiSelect",
+            "DnD.Snap",
+            "DnD.Resize",
+            "DnD.Grid"
+        ],
+        "Pattern Views": [
+            "DnD.Tree.View",
+            "DnD.Kanban.View",
+            "DnD.MultiSelect.View",
+            "DnD.Resize.View",
+            "DnD.Grid.View"
+        ],
+        "Utilities": [
+            "DnD.Monitor",
+            "DnD.Operation",
+            "DnD.History",
+            "DnD.FileDrop",
+            "DnD.Virtualized",
+            "DnD.Testing",
+            "DnD.Alternatives"
+        ],
+        "Sensors & Detection": [
+            "DnD.Sensor",
+            "DnD.Collision"
+        ],
+        "Modifiers & Accessibility": [
+            "DnD.Modifier",
+            "DnD.Announcements",
+            "DnD.AutoScroll"
+        ]
+    },
+    "canopy-version": "0.19.0 <= v < 0.20.0",
+    "dependencies": {
+        "canopy/core": "1.0.0 <= v < 2.0.0",
+        "canopy/html": "1.0.0 <= v < 2.0.0",
+        "canopy/json": "1.0.0 <= v < 2.0.0",
+        "canopy/browser": "1.0.0 <= v < 2.0.0",
+        "canopy/css": "1.0.0 <= v < 2.0.0",
+        "canopy/animation": "1.0.0 <= v < 2.0.0"
+    },
+    "test-dependencies": {
+        "canopy/test": "1.0.0 <= v < 3.0.0"
+    }
+}

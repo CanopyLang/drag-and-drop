@@ -1,0 +1,182 @@
+module Test.DnD.Sortable.View exposing (main, tests)
+
+import Basics exposing (..)
+import DnD exposing (..)
+import DnD.Sortable exposing (Layout(..))
+import DnD.Sortable.View exposing (..)
+import Html exposing (Html, div, text)
+import Test exposing (..)
+import Expect
+
+
+main : Test
+main =
+    tests
+
+
+dummyRect : Rect
+dummyRect =
+    { x = 0, y = 0, width = 200, height = 60 }
+
+
+tests : Test
+tests =
+    describe "DnD.Sortable.View"
+        [ defaultIndicatorTests
+        , defaultDirectionTests
+        , viewPlaceholderTests
+        , viewInsertionIndicatorTests
+        ]
+
+
+defaultIndicatorTests : Test
+defaultIndicatorTests =
+    describe "defaultIndicator"
+        [ test "is a Line indicator" <|
+            \() ->
+                case defaultIndicator of
+                    Line _ ->
+                        Expect.pass
+
+                    _ ->
+                        Expect.fail "Expected Line"
+        , test "Line has blue color #2196F3" <|
+            \() ->
+                case defaultIndicator of
+                    Line config ->
+                        Expect.equal "#2196F3" config.color
+
+                    _ ->
+                        Expect.fail "Expected Line"
+        , test "Line has thickness 2" <|
+            \() ->
+                case defaultIndicator of
+                    Line config ->
+                        Expect.equal 2 config.thickness
+
+                    _ ->
+                        Expect.fail "Expected Line"
+        , test "is not a Gap indicator" <|
+            \() ->
+                case defaultIndicator of
+                    Gap _ ->
+                        Expect.fail "Expected Line, not Gap"
+
+                    _ ->
+                        Expect.pass
+        , test "is not a Custom indicator" <|
+            \() ->
+                case defaultIndicator of
+                    Custom _ ->
+                        Expect.fail "Expected Line, not Custom"
+
+                    _ ->
+                        Expect.pass
+        ]
+
+
+defaultDirectionTests : Test
+defaultDirectionTests =
+    describe "defaultDirection"
+        [ test "is LTR" <|
+            \() ->
+                case defaultDirection of
+                    LTR ->
+                        Expect.pass
+
+                    RTL ->
+                        Expect.fail "Expected LTR"
+        , test "is not RTL" <|
+            \() ->
+                Expect.notEqual defaultDirection RTL
+        ]
+
+
+viewPlaceholderTests : Test
+viewPlaceholderTests =
+    describe "viewPlaceholder"
+        [ test "renders without error with standard rect" <|
+            \() ->
+                let
+                    _ =
+                        viewPlaceholder { x = 0, y = 0, width = 100, height = 50 }
+                in
+                Expect.pass
+        , test "renders without error with zero-size rect" <|
+            \() ->
+                let
+                    _ =
+                        viewPlaceholder { x = 0, y = 0, width = 0, height = 0 }
+                in
+                Expect.pass
+        , test "renders without error with large rect" <|
+            \() ->
+                let
+                    _ =
+                        viewPlaceholder { x = 500, y = 300, width = 400, height = 200 }
+                in
+                Expect.pass
+        ]
+
+
+viewInsertionIndicatorTests : Test
+viewInsertionIndicatorTests =
+    describe "viewInsertionIndicator"
+        [ test "renders Line indicator for Vertical layout" <|
+            \() ->
+                let
+                    _ =
+                        viewInsertionIndicator
+                            (Line { color = "#2196F3", thickness = 2 })
+                            Vertical
+                            LTR
+                in
+                Expect.pass
+        , test "renders Line indicator for Horizontal layout" <|
+            \() ->
+                let
+                    _ =
+                        viewInsertionIndicator
+                            (Line { color = "#FF0000", thickness = 3 })
+                            Horizontal
+                            LTR
+                in
+                Expect.pass
+        , test "renders Gap indicator for Vertical layout" <|
+            \() ->
+                let
+                    _ =
+                        viewInsertionIndicator
+                            (Gap { size = 10 })
+                            Vertical
+                            LTR
+                in
+                Expect.pass
+        , test "renders Gap indicator for Horizontal layout" <|
+            \() ->
+                let
+                    _ =
+                        viewInsertionIndicator
+                            (Gap { size = 20 })
+                            Horizontal
+                            LTR
+                in
+                Expect.pass
+        , test "renders Line indicator for RTL direction" <|
+            \() ->
+                let
+                    _ =
+                        viewInsertionIndicator
+                            (Line { color = "#2196F3", thickness = 2 })
+                            Horizontal
+                            RTL
+                in
+                Expect.pass
+        , test "renders with default indicator" <|
+            \() ->
+                let
+                    _ =
+                        viewInsertionIndicator defaultIndicator Vertical defaultDirection
+                in
+                Expect.pass
+        ]
